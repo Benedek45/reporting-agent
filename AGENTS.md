@@ -75,14 +75,23 @@ authenticates via the injected key.
 
 ## 3. Repository layout
 
-> **On-disk location:** the repo root is `D:\AGI_gent\gold\gold` (nested one
-> level under `D:\AGI_gent\gold`). It was deliberately moved down one level
-> because the opencode instance used for development runs from
-> `D:\AGI_gent\gold`. Keeping our project — which has its *own* `opencode.json`
-> and `AGENTS.md` — at that same path collided with the dev opencode's config /
-> instruction discovery (it walks the directory tree and picked up our files).
-> Nesting the project in its own subdirectory isolates the two. All commands
-> below assume the repo root `D:\AGI_gent\gold\gold` as the working directory.
+> **On-disk location & the AGENTS.md hardlink:** the repo root is
+> `D:\AGI_gent\gold\gold`, nested one level under `D:\AGI_gent\gold`. The project
+> was moved down one level because the opencode instance used for development
+> runs from `D:\AGI_gent\gold`; keeping our **`opencode.json` / `.opencode/`** at
+> that path collided with the dev opencode's config discovery. Those config files
+> must stay nested for that reason.
+>
+> `AGENTS.md` is the deliberate exception. It is tracked in the repo at
+> `D:\AGI_gent\gold\gold\AGENTS.md` **and hardlinked** to
+> `D:\AGI_gent\gold\AGENTS.md` — one NTFS inode, one set of bytes, two directory
+> entries (not two copies). This lets it load into the dev agent's context (whose
+> working directory is `D:\AGI_gent\gold`) while staying version-controlled.
+> Editing either path edits the single underlying file. If a tool ever replaces
+> the file and breaks the link, recreate it from the repo (the source of truth):
+> `cmd /c mklink /H "D:\AGI_gent\gold\AGENTS.md" "D:\AGI_gent\gold\gold\AGENTS.md"`.
+> All commands below assume the repo root `D:\AGI_gent\gold\gold` as the working
+> directory.
 
 ```
 docker-compose.yml         the full app: `app` + `opencode` + shared volume
