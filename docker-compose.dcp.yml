@@ -1,0 +1,24 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# OPT-IN OVERLAY: Dynamic Context Pruning (DCP)
+# https://github.com/Opencode-DCP/opencode-dynamic-context-pruning
+#
+# DCP is licensed AGPL-3.0-or-later. It is deliberately NOT bundled with
+# reporting-agent. By using this overlay YOU choose to install and run DCP, and
+# YOU take on the AGPL obligations for the opencode+DCP combined service you then
+# run/serve (e.g. offering its Corresponding Source to network users). The
+# reporting-agent project does not convey DCP and stays MIT-clean by default.
+#
+# Enable:
+#   docker compose -f docker-compose.yml -f docker-compose.dcp.yml up -d --build
+#   (or: scripts/enable-dcp.sh  /  scripts/enable-dcp.ps1)
+# Disable: bring the stack up again WITHOUT this -f overlay:
+#   docker compose up -d
+#
+# How it works: opencode merges this extra plugin spec via OPENCODE_CONFIG_CONTENT
+# and bun-installs the npm package at startup (cached in the container's home).
+# It runs ALONGSIDE the default MIT report-compaction plugin.
+# ─────────────────────────────────────────────────────────────────────────────
+services:
+  opencode:
+    environment:
+      OPENCODE_CONFIG_CONTENT: '{"plugin":["@tarquinen/opencode-dcp@latest"]}'

@@ -213,3 +213,85 @@ p {
   font-size: 0.85rem;
   font-style: italic;
 }
+
+/* Drag-and-drop dropzone */
+.dropzone {
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius);
+  padding: 0.75rem 1rem;
+  text-align: center;
+  font-size: 0.85rem;
+  color: var(--color-text-muted);
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  user-select: none;
+}
+
+.dropzone:hover {
+  border-color: var(--color-primary);
+  background: #f0f5ff;
+}
+
+.dropzone.active {
+  border-color: var(--color-primary);
+  background: #e8f0fe;
+  color: var(--color-primary);
+}
+
+/* Uploads panel */
+.uploads {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.upload-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.4rem 0.75rem;
+  background: var(--color-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  flex-wrap: wrap;
+}
+
+.upload-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 500;
+  color: var(--color-text);
+}
+
+.upload-size {
+  color: var(--color-text-muted);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.loaded-badge {
+  color: #198754;
+  font-size: 0.8rem;
+  font-weight: 500;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* Hint label above uploads panel */
+.hint {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  font-style: normal;
+  margin-bottom: 0.1rem;
+}
+
+/* Inline note (e.g. "too large" message) */
+.note {
+  font-size: 0.8rem;
+  color: var(--color-text-muted);
+  font-style: italic;
+}

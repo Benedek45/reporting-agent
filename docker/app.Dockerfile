@@ -24,6 +24,9 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/.next ./.next
 COPY package.json next.config.mjs ./
 COPY .opencode ./.opencode
+# Goal definitions are read at request time by the BFF (lib/goals.ts), so they
+# must live in the runtime image.
+COPY goals ./goals
 EXPOSE 3000
 # TODO(harden): run as non-root (USER node) once /workspaces volume ownership is set.
 CMD ["npm", "run", "start"]

@@ -13,11 +13,13 @@ The first two tasks are **CSRD/ESRS** reporting and **voluntary ESG** reporting.
 
 Flow for the end user (intended to be simple):
 
-1. Pick a task (e.g. "CSRD / ESRS report").
-2. Chat with an agent that interviews them, asks for source documents, and
-   drafts the report.
-3. The agent writes the report as Markdown, fact-checks the figures, and the
-   app converts it to PDF/DOCX.
+1. Pick a **goal** from a dropdown (goals are Markdown files in `goals/`).
+2. Chat with an agent that interviews them and asks for source documents.
+3. Upload documents (drag-and-drop). They are **converted to Markdown
+   automatically on upload** (the model only reads text), so the agent can read
+   them. A "Load full file into context" button injects a whole file (size-capped).
+4. The agent drafts the report as Markdown, fact-checks figures, and the app
+   converts it to PDF/DOCX.
 
 The agent must: ask questions, request multiple documents as needed, never
 invent data, and attribute every figure to a source.
@@ -46,10 +48,12 @@ The application is a **two-service Docker Compose project**:
   │                ├─ agent: compliance (primary)                  │
   │                ├─ agent: fact-checker (subagent)               │
   │                ├─ skills: csrd-esrs, esg-reporting             │
-  │                └─ MCP: doc-ingest, doc-generate, fact-check    │
+  │                ├─ plugin: report-compaction (MIT)              │
+  │                └─ MCP: doc-generate, fact-check (stubs)        │
+  │  converter     MarkItDown -> Markdown   :8000 (internal, MIT)  │
   │                                                                │
-  │  volume: workspaces ── mounted at /workspaces in BOTH ──       │
-  │     <id>/uploads/  (client docs)   <id>/output/report.md       │
+  │  volume: workspaces ── mounted at /workspaces in app+opencode  │
+  │     <id>/goal.md  <id>/uploads/*(+.md)  <id>/output/report.md  │
   └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -73,6 +77,13 @@ and the agent writes `output/report.md` (ESRS-structured, `[DATA NEEDED: …]`
 placeholders, zero fabricated numbers). The model `opencode-go/deepseek-v4-flash`
 authenticates via the injected key.
 
+Also verified (2026-06): the home page renders the **goal dropdown** from
+`goals/*.md`; session create writes `goal.md`; uploading a non-text file routes
+through the **`converter`** service and a Markdown sidecar (`uploads/<name>.md`)
+appears (an HTML table became a Markdown table); the agent reads it; the **"Load
+full file into context"** button (`/api/context`) injects the file's markdown;
+and the engine boots clean with the `report-compaction` plugin present.
+
 ## 3. Repository layout
 
 > **On-disk location & the AGENTS.md hardlink:** the repo root is
@@ -94,11 +105,18 @@ authenticates via the injected key.
 > directory.
 
 ```
-docker-compose.yml         the full app: `app` + `opencode` + shared volume
+docker-compose.yml         the full app: app + opencode + converter + volume
+docker-compose.dcp.yml     OPT-IN overlay: enable the AGPL DCP plugin (not bundled)
 docker/
   opencode.Dockerfile      engine image (vendored opencode, Linux, bun)
   app.Dockerfile           Next.js UI+BFF image (multi-stage build)
+  converter.Dockerfile     MarkItDown document->markdown service (python, MIT)
 .dockerignore              keep build context lean (no node_modules/.git/.env)
+converter/app.py           FastAPI /convert (MarkItDown) + /health
+goals/
+  goal_csrd_esrs.md        a selectable goal (frontmatter id/title/agent/skill/template)
+  goal_esg.md
+scripts/enable-dcp.{sh,ps1}  one-command opt-in for the AGPL DCP plugin
 opencode.json              opencode runtime config (model, agents, skills, MCP, permissions)
 .env / .env.example        secrets + runtime config (.env is gitignored)
 prompts/
@@ -107,23 +125,28 @@ prompts/
 .opencode/skills/
   csrd-esrs/SKILL.md       + assets/report-template.md
   esg-reporting/SKILL.md   + assets/report-template.md
+.opencode/plugins/
+  report-compaction.js     MIT plugin: inject goal+STATUS+[DATA NEEDED] at compaction
 mcp/
-  doc-ingest/index.mjs     MCP stub: read/extract uploaded documents
   doc-generate/index.mjs   MCP stub: render report.md -> PDF/DOCX
   fact-check/index.mjs     MCP stub: verify claims via web search backend
+  doc-ingest/index.mjs     stub, SUPERSEDED by the converter service (safe to delete)
 src/
   app/
-    page.tsx               task picker
-    chat/[sessionId]/page.tsx   chat UI
-    api/sessions/route.ts  POST: create session + provision workspace + bind dir
+    page.tsx               goal dropdown (server) + _components/GoalPicker.tsx (client)
+    chat/[sessionId]/page.tsx   chat UI: drag-drop upload + load-to-context
+    api/sessions/route.ts  POST: create session + provision workspace + goal.md
     api/chat/route.ts      POST: relay a message to opencode
-    api/upload/route.ts    POST: save uploaded files into the workspace
+    api/upload/route.ts    POST: save upload + auto-convert to markdown
+    api/uploads/route.ts   GET: list a session's uploaded source files
+    api/context/route.ts   POST: inject a full file's markdown into the chat (capped)
     layout.tsx, globals.css
   lib/
-    tasks.ts               task registry (csrd, esg -> agent + skill + template)
+    goals.ts               load goals/*.md (frontmatter + body)
+    converter.ts           server-only client for the MarkItDown service
     opencode.ts            server-only REST client (createSession, sendMessage)
-    workspace.ts           server-only FS helpers (provision/ensure, saveUpload)
-  types/index.ts           shared types
+    workspace.ts           server-only FS helpers (provision, uploads, goal.md)
+  types/index.ts           shared types (Goal, ...)
 vendor/opencode/           vendored opencode fork (MIT) — see §4
 workspaces/                local placeholder (gitignored); real workspaces live
                            in the `workspaces` docker volume (see §8)
@@ -215,14 +238,34 @@ and picking up stray configs — the original collision cause).
   report template in `assets/` is **copied into the session workspace** at
   init (the agent can't read repo files outside its sandbox — verified: it tries
   the bundled path, is denied, and falls back to the in-workspace copy).
-- **MCP servers** (`mcp/`, declared in `opencode.json`, currently
-  `enabled: false` — they are stubs):
-  - `doc-ingest`: `list_uploads`, `extract_document` (PDF/DOCX/XLSX → text/tables)
-  - `doc-generate`: `render_report` (report.md → PDF/DOCX)
-  - `fact-check`: `verify_claim` (pluggable web-search backend)
-  - To activate: install their deps **into the opencode image**, implement the
-    handler, flip `enabled: true`. Note `node` may be absent in the bun image —
-    launch them with `bun` or add node.
+- **MCP servers** (`mcp/`, declared in `opencode.json`, `enabled: false` — stubs):
+  - `doc-generate`: `render_report` (report.md → PDF/DOCX) — still to implement.
+  - `fact-check`: `verify_claim` (pluggable web-search backend) — still to implement.
+  - `doc-ingest` is **superseded** by the automatic `converter` service (below);
+    the stub remains but is unused and safe to delete.
+
+- **Goals** (`goals/goal_*.md`): each is frontmatter (`id, title, agent, skill,
+  template`) + a plain-language body. `src/lib/goals.ts` loads them; the home page
+  shows them as a **dropdown**. On session create the BFF writes the body to
+  `<workspace>/goal.md`; the agent reads it first (prompt step 1) to learn the goal
+  and which skill to load. Add a goal = drop a new `.md` file, no code change.
+
+- **Documents are converted to Markdown automatically on upload.** The model only
+  reads text, so `/api/upload` sends every non-text file to the **`converter`**
+  service (MarkItDown, MIT, internal `:8000`) and writes `uploads/<name>.md` beside
+  the raw file; the agent reads the `.md`. The **"Load full file into context"**
+  button (`/api/context`) injects a whole file's markdown into the chat, capped by
+  `MAX_CONTEXT_FILE_BYTES` (default 200 000); larger files stay on-demand-only.
+
+- **Context management.** Shipped default (MIT): opencode **native compaction** +
+  `.opencode/plugins/report-compaction.js`, which hooks
+  `experimental.session.compacting` to inject the active goal + report STATUS +
+  every `[DATA NEEDED]` so they survive compaction. **Opt-in, not bundled:** DCP
+  (`@tarquinen/opencode-dcp`, **AGPL-3.0**) via `docker compose -f
+  docker-compose.yml -f docker-compose.dcp.yml up` (or `scripts/enable-dcp.*`).
+  Rationale: DCP loads in-process (a "combined work" with opencode), so we never
+  bundle/convey it — the operator opts in and takes on the AGPL obligations for the
+  service they then run. Our app stays at arm's length over HTTP and MIT-clean.
 
 ## 8. Per-session workspace isolation
 
@@ -279,14 +322,17 @@ and picking up stray configs — the original collision cause).
 
 ## 12. Status & roadmap (deferred)
 
-Done: scaffold, vendored opencode, the **containerized two-service app**, and an
-**end-to-end verified** flow (agent interviews in text + writes `output/report.md`).
+Done: scaffold, vendored opencode, the **containerized app** (now app + opencode +
+converter), goal dropdown from `goals/`, **automatic document→Markdown conversion**
+on upload (MarkItDown), drag-and-drop upload + "load full file into context"
+(capped), the MIT **report-compaction** plugin + the **DCP opt-in** overlay, and an
+**end-to-end verified** flow.
 **Deferred** (not yet built):
 
 - SSE token streaming in `/api/chat` (via `prompt_async` + `GET /event`), which
   also unlocks re-enabling the structured interactive `question` tool.
-- Real implementations of `doc-ingest`, `doc-generate`, `fact-check` MCP servers
-  (incl. installing their deps into the engine image).
+- `doc-generate` MCP (report.md → PDF/DOCX export) + `fact-check` MCP; remove the
+  superseded `doc-ingest` stub.
 - `/api/report` download route + the UI "Download report" button.
 - Non-root container hardening (`USER` + `/workspaces` volume ownership),
   restricted egress (allow only the model API + fact-check domains), resource limits.

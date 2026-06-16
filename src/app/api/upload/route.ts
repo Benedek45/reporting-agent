@@ -1,8 +1,14 @@
 export const runtime = "nodejs";
 
 import { NextRequest } from "next/server";
-import { saveUpload } from "@/lib/workspace";
-import type { UploadInfo } from "@/types";
+import { saveUpload, writeUploadMarkdown } from "@/lib/workspace";
+import { convertToMarkdown, isAlreadyText } from "@/lib/converter";
+
+interface UploadResult {
+  name: string;
+  size: number;
+  converted: boolean;
+}
 
 export async function POST(req: NextRequest): Promise<Response> {
   try {
@@ -24,7 +30,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       );
     }
 
-    const uploaded: UploadInfo[] = [];
+    const uploaded: UploadResult[] = [];
 
     for (const entry of fileEntries) {
       if (!(entry instanceof File)) {
@@ -36,7 +42,22 @@ export async function POST(req: NextRequest): Promise<Response> {
 
       const data = new Uint8Array(await entry.arrayBuffer());
       const info = await saveUpload(sessionId, entry.name, data);
-      uploaded.push(info);
+
+      let converted = false;
+      if (!isAlreadyText(entry.name)) {
+        try {
+          const markdown = await convertToMarkdown(entry.name, data);
+          await writeUploadMarkdown(sessionId, entry.name, markdown);
+          converted = true;
+        } catch (convErr) {
+          console.warn(
+            `[POST /api/upload] conversion failed for ${entry.name}:`,
+            convErr
+          );
+        }
+      }
+
+      uploaded.push({ name: info.name, size: info.size, converted });
     }
 
     return Response.json({ uploaded });

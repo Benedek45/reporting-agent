@@ -4,6 +4,14 @@
 name: reporting-agent
 
 services:
+  converter:
+    build:
+      context: .
+      dockerfile: docker/converter.Dockerfile
+    expose:
+      - "8000" # internal network only — intentionally not published
+    restart: unless-stopped
+
   opencode:
     build:
       context: .
@@ -16,6 +24,9 @@ services:
       OPENCODE_CONFIG: /config/opencode.json
       OPENCODE_CONFIG_DIR: /config/.opencode
       OPENCODE_DISABLE_PROJECT_CONFIG: "true"
+      # The report-compaction plugin resolves session workspaces under this path.
+      # `environment` overrides the host-dev value that env_file (.env) would set.
+      WORKSPACES_ROOT: /workspaces
     volumes:
       - ./opencode.json:/config/opencode.json:ro
       - ./prompts:/config/prompts:ro
@@ -35,12 +46,14 @@ services:
       OPENCODE_SERVER_URL: http://opencode:4096
       WORKSPACES_ROOT: /workspaces
       NODE_ENV: production
+      CONVERTER_URL: http://converter:8000
     ports:
       - "3000:3000" # the only port exposed to the user
     volumes:
       - workspaces:/workspaces
     depends_on:
       - opencode
+      - converter
     restart: unless-stopped
 
 volumes:

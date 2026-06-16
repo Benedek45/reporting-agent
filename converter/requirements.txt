@@ -1,0 +1,4 @@
+markitdown[pdf,docx,pptx,xlsx,xls]
+fastapi
+uvicorn[standard]
+python-multipart
