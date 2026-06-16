@@ -1,0 +1,32 @@
+{
+  "name": "reporting-agent",
+  "version": "0.0.1",
+  "private": true,
+  "description": "Task-based compliance reporting agent (CSRD/ESG) — Next.js UI + BFF over a headless opencode server.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev",
+    "build": "next build",
+    "start": "next start",
+    "opencode:install": "bun install --cwd vendor/opencode",
+    "opencode:serve": "bun run --cwd vendor/opencode dev serve --port 4096 --hostname 127.0.0.1",
+    "mcp:doc-ingest": "node mcp/doc-ingest/index.mjs",
+    "mcp:doc-generate": "node mcp/doc-generate/index.mjs",
+    "mcp:fact-check": "node mcp/fact-check/index.mjs"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "@opencode-ai/sdk": "^0.1.0",
+    "next": "^15.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "typescript": "^5.6.0"
+  }
+}

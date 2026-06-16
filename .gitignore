@@ -1,0 +1,34 @@
+# Secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Dependencies
+node_modules/
+mcp/**/node_modules/
+
+# Vendored opencode fork: SOURCE is tracked, ignore only its build output
+vendor/**/node_modules/
+vendor/**/dist/
+vendor/**/.turbo/
+vendor/opencode/.sst/
+
+# Next.js
+.next/
+out/
+build/
+next-env.d.ts
+
+# Per-session agent workspaces (uploaded client docs + generated reports)
+workspaces/
+!workspaces/.gitkeep
+
+# opencode local state
+.opencode/auth.json
+.opencode/cache/
+
+# Logs / OS
+*.log
+npm-debug.log*
+.DS_Store
+Thumbs.db

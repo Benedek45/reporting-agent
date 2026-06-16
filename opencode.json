@@ -1,0 +1,102 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+
+  "model": "opencode-go/deepseek-v4-flash",
+  "small_model": "opencode-go/deepseek-v4-flash",
+
+  "provider": {
+    "opencode-go": {
+      "options": {
+        "apiKey": "{env:OPENCODE_GO_API_KEY}"
+      }
+    }
+  },
+
+  "default_agent": "compliance",
+  "share": "disabled",
+  "autoupdate": false,
+
+  "permission": {
+    "bash": "deny",
+    "external_directory": "deny",
+    "edit": "allow",
+    "webfetch": "allow"
+  },
+
+  "agent": {
+    "compliance": {
+      "description": "Primary reporting assistant. Interviews the user, requests source documents, drafts the report as a Markdown file, and fact-checks the data.",
+      "mode": "primary",
+      "model": "opencode-go/deepseek-v4-flash",
+      "temperature": 0.2,
+      "prompt": "{file:./prompts/compliance.md}",
+      "permission": {
+        "read": "allow",
+        "edit": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "bash": "deny",
+        "external_directory": "deny",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "question": "allow",
+        "skill": {
+          "*": "deny",
+          "csrd-esrs": "allow",
+          "esg-reporting": "allow"
+        },
+        "task": {
+          "*": "deny",
+          "fact-checker": "allow"
+        }
+      }
+    },
+
+    "fact-checker": {
+      "description": "Read-only subagent that verifies figures, claims, and regulatory references against the source documents and the web. Returns a list of confirmed/uncertain/contradicted findings. Never edits files.",
+      "mode": "subagent",
+      "model": "opencode-go/deepseek-v4-flash",
+      "temperature": 0.1,
+      "prompt": "{file:./prompts/fact-checker.md}",
+      "permission": {
+        "read": "allow",
+        "glob": "allow",
+        "grep": "allow",
+        "list": "allow",
+        "edit": "deny",
+        "bash": "deny",
+        "external_directory": "deny",
+        "webfetch": "allow",
+        "websearch": "allow",
+        "skill": { "*": "deny" },
+        "task": { "*": "deny" }
+      }
+    }
+  },
+
+  "mcp": {
+    "doc-ingest": {
+      "type": "local",
+      "command": ["node", "mcp/doc-ingest/index.mjs"],
+      "enabled": false,
+      "timeout": 30000
+    },
+    "doc-generate": {
+      "type": "local",
+      "command": ["node", "mcp/doc-generate/index.mjs"],
+      "enabled": false,
+      "timeout": 30000
+    },
+    "fact-check": {
+      "type": "local",
+      "command": ["node", "mcp/fact-check/index.mjs"],
+      "enabled": false,
+      "environment": {
+        "FACTCHECK_BACKEND": "{env:FACTCHECK_BACKEND}",
+        "FACTCHECK_API_KEY": "{env:FACTCHECK_API_KEY}"
+      },
+      "timeout": 30000
+    }
+  }
+}
