@@ -76,6 +76,11 @@
   },
 
   "mcp": {
+    "workspace": {
+      "type": "local",
+      "command": ["bun", "run", "/config/mcp/workspace/index.mjs"],
+      "enabled": true
+    },
     "doc-ingest": {
       "type": "local",
       "command": ["node", "mcp/doc-ingest/index.mjs"],

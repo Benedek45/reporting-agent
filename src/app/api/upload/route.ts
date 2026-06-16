@@ -1,7 +1,7 @@
 export const runtime = "nodejs";
 
 import { NextRequest } from "next/server";
-import { saveUpload, writeUploadMarkdown } from "@/lib/workspace";
+import { saveUpload, writeUploadMarkdown, recordUpload } from "@/lib/workspace";
 import { convertToMarkdown, isAlreadyText } from "@/lib/converter";
 
 interface UploadResult {
@@ -57,6 +57,7 @@ export async function POST(req: NextRequest): Promise<Response> {
         }
       }
 
+      await recordUpload(sessionId, info.name);
       uploaded.push({ name: info.name, size: info.size, converted });
     }
 

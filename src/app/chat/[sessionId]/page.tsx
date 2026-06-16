@@ -2,45 +2,87 @@
 
 import { useState, useRef, useEffect, useCallback } from "react";
 import { useParams } from "next/navigation";
-import type { ChatMessage, UploadInfo } from "@/types";
-
-// TODO(scaffold): switch to GET /event SSE for token streaming instead of
-// awaiting the full reply from POST /api/chat.
+import type { ChatMessage, EnvFile, TodoItem, StreamEvent } from "@/types";
+import DocumentsSidebar from "@/app/_components/DocumentsSidebar";
+import Thinking from "@/app/_components/Thinking";
+import ContextMeter from "@/app/_components/ContextMeter";
+import TodoPanel from "@/app/_components/TodoPanel";
 
 function generateId(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 }
 
-function formatBytes(n: number): string {
-  if (n < 1024) return `${n} B`;
-  if (n < 1024 * 1024) return `${(n / 1024).toFixed(1)} KB`;
-  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+// ── SSE reader ────────────────────────────────────────────────────────────────
+
+/**
+ * Parse one or more SSE frames from a raw text chunk.
+ * Handles partial frames: returns parsed events and any leftover partial frame.
+ */
+function parseSseChunk(
+  buffer: string,
+  newChunk: string
+): { events: StreamEvent[]; remaining: string } {
+  const combined = buffer + newChunk;
+  const frames = combined.split("\n\n");
+  // The last element may be a partial frame (no trailing \n\n yet)
+  const remaining = frames.pop() ?? "";
+  const events: StreamEvent[] = [];
+
+  for (const frame of frames) {
+    const lines = frame.split("\n");
+    let dataLine = "";
+    for (const line of lines) {
+      if (line.startsWith("data: ")) {
+        dataLine = line.slice(6);
+      }
+    }
+    if (!dataLine) continue;
+    try {
+      const parsed = JSON.parse(dataLine) as StreamEvent;
+      events.push(parsed);
+    } catch {
+      // Malformed frame — skip
+    }
+  }
+
+  return { events, remaining };
 }
 
-type LoadState = "idle" | "loading" | "loaded" | "too-large";
+// ── Component ─────────────────────────────────────────────────────────────────
 
 export default function ChatPage() {
   const params = useParams();
   const sessionId = params.sessionId as string;
 
+  // Chat state
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
-  const [sending, setSending] = useState(false);
-  const [uploading, setUploading] = useState(false);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Uploads panel state
-  const [uploads, setUploads] = useState<UploadInfo[]>([]);
-  const [loadStates, setLoadStates] = useState<Record<string, LoadState>>({});
-  const [dropActive, setDropActive] = useState(false);
+  // Streaming in-progress assistant message
+  const [streamingText, setStreamingText] = useState<string | null>(null);
+  // Live reasoning (shown in the Thinking box, kept out of the answer bubble)
+  const [reasoningText, setReasoningText] = useState("");
+
+  // Right panel state
+  const [todos, setTodos] = useState<TodoItem[]>([]);
+  const [usedTokens, setUsedTokens] = useState(0);
+  const [contextLimit, setContextLimit] = useState(200_000);
+  const [contextPct, setContextPct] = useState(0);
+
+  // Left sidebar files
+  const [files, setFiles] = useState<EnvFile[]>([]);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const dropzoneInputRef = useRef<HTMLInputElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
+  // Auto-scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages]);
+  }, [messages, streamingText]);
+
+  // ── Helpers ────────────────────────────────────────────────────────────────
 
   function appendMessage(role: ChatMessage["role"], text: string) {
     setMessages((prev) => [
@@ -49,111 +91,153 @@ export default function ChatPage() {
     ]);
   }
 
-  const refreshUploads = useCallback(async () => {
+  const refreshFiles = useCallback(async () => {
     try {
-      const res = await fetch(`/api/uploads?sessionId=${encodeURIComponent(sessionId)}`);
+      const res = await fetch(`/api/files?sessionId=${encodeURIComponent(sessionId)}`);
       if (!res.ok) return;
-      const data = (await res.json()) as { uploads: UploadInfo[] };
-      setUploads(data.uploads);
+      const data = (await res.json()) as { files: EnvFile[] };
+      setFiles(data.files);
     } catch {
-      // Non-fatal: uploads panel just won't update
+      // Non-fatal
     }
   }, [sessionId]);
 
-  // Load uploads on mount
-  useEffect(() => {
-    void refreshUploads();
-  }, [refreshUploads]);
-
-  async function uploadFiles(files: File[]) {
-    if (files.length === 0 || uploading) return;
-
-    setUploading(true);
-    setError(null);
-
+  const refreshState = useCallback(async () => {
     try {
-      const formData = new FormData();
-      formData.append("sessionId", sessionId);
-      for (const file of files) {
-        formData.append("files", file);
-      }
-
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `Upload error ${res.status}`);
-      }
-
-      await refreshUploads();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Upload failed");
-    } finally {
-      setUploading(false);
+      const res = await fetch(`/api/session/${encodeURIComponent(sessionId)}/state`);
+      if (!res.ok) return;
+      const data = (await res.json()) as {
+        usedTokens: number;
+        contextLimit: number;
+        pct: number;
+        todos: TodoItem[];
+        status: string;
+      };
+      setUsedTokens(data.usedTokens);
+      setContextLimit(data.contextLimit);
+      setContextPct(data.pct);
+      setTodos(data.todos);
+    } catch {
+      // Non-fatal
     }
-  }
+  }, [sessionId]);
+
+  // Load initial state on mount
+  useEffect(() => {
+    void refreshFiles();
+    void refreshState();
+  }, [refreshFiles, refreshState]);
+
+  // Cleanup abort controller on unmount
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
+
+  // ── Send (streaming) ───────────────────────────────────────────────────────
 
   async function handleSend() {
     const text = input.trim();
-    if (!text || sending) return;
+    if (!text || busy) return;
 
     setInput("");
     setError(null);
     appendMessage("user", text);
-    setSending(true);
+    setBusy(true);
+    setStreamingText("");
+    setReasoningText("");
+
+    const controller = new AbortController();
+    abortRef.current = controller;
 
     try {
-      const res = await fetch("/api/chat", {
+      const res = await fetch("/api/chat/stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ sessionId, text }),
+        signal: controller.signal,
       });
 
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as {
-          error?: string;
-        };
+      if (!res.ok || !res.body) {
+        const body = (await res.json().catch(() => ({}))) as { error?: string };
         throw new Error(body.error ?? `Server error ${res.status}`);
       }
 
-      const data = (await res.json()) as { reply: string };
-      appendMessage("assistant", data.reply);
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let sseBuffer = "";
+      let accumulatedText = "";
+      let finalized = false;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        const chunk = decoder.decode(value, { stream: true });
+        const { events, remaining } = parseSseChunk(sseBuffer, chunk);
+        sseBuffer = remaining;
+
+        for (const event of events) {
+          switch (event.type) {
+            case "text":
+              accumulatedText += event.delta;
+              setStreamingText(accumulatedText);
+              break;
+
+            case "reasoning":
+              // Keep reasoning out of the answer; show the tail in the Thinking box.
+              setReasoningText((prev) => (prev + event.delta).slice(-500));
+              break;
+
+            case "todos":
+              setTodos(event.todos);
+              break;
+
+            case "status":
+              // busy state is already managed by the outer try/finally
+              break;
+
+            case "usage":
+              setUsedTokens(event.usedTokens);
+              setContextLimit(event.contextLimit);
+              setContextPct(event.pct);
+              break;
+
+            case "done":
+              // Finalize the streamed message
+              if (accumulatedText) {
+                appendMessage("assistant", accumulatedText);
+              }
+              finalized = true;
+              setStreamingText(null);
+              setBusy(false);
+              void refreshFiles();
+              void refreshState();
+              break;
+
+            case "error":
+              setError(event.error);
+              finalized = true;
+              setStreamingText(null);
+              setBusy(false);
+              break;
+          }
+        }
+      }
+
+      // Stream ended without a "done" frame — finalize anyway
+      if (!finalized && accumulatedText) {
+        appendMessage("assistant", accumulatedText);
+      }
     } catch (err) {
+      if ((err as { name?: string }).name === "AbortError") return;
       setError(err instanceof Error ? err.message : "Unexpected error");
     } finally {
-      setSending(false);
-    }
-  }
-
-  async function handleLoadIntoContext(fileName: string) {
-    setLoadStates((prev) => ({ ...prev, [fileName]: "loading" }));
-
-    try {
-      const res = await fetch("/api/context", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, fileName }),
-      });
-
-      if (res.status === 413) {
-        setLoadStates((prev) => ({ ...prev, [fileName]: "too-large" }));
-        return;
-      }
-
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `Error ${res.status}`);
-      }
-
-      const data = (await res.json()) as { reply: string; loadedBytes: number };
-      appendMessage("assistant", data.reply);
-      setLoadStates((prev) => ({ ...prev, [fileName]: "loaded" }));
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Failed to load file into context");
-      setLoadStates((prev) => ({ ...prev, [fileName]: "idle" }));
+      setStreamingText(null);
+      setReasoningText("");
+      setBusy(false);
+      abortRef.current = null;
     }
   }
 
@@ -164,170 +248,82 @@ export default function ChatPage() {
     }
   }
 
-  function handleDownloadReport() {
-    // TODO(scaffold): fetch /api/report?sessionId=... which reads
-    // <workspace>/output/report.md and streams it as a file download.
-    alert("Download not yet implemented.");
-  }
-
-  // Drag-and-drop handlers
-  function handleDragOver(e: React.DragEvent<HTMLDivElement>) {
-    e.preventDefault();
-    setDropActive(true);
-  }
-
-  function handleDragLeave(e: React.DragEvent<HTMLDivElement>) {
-    // Only deactivate if leaving the dropzone itself (not a child)
-    if (!e.currentTarget.contains(e.relatedTarget as Node)) {
-      setDropActive(false);
-    }
-  }
-
-  function handleDrop(e: React.DragEvent<HTMLDivElement>) {
-    e.preventDefault();
-    setDropActive(false);
-    const files = Array.from(e.dataTransfer.files);
-    void uploadFiles(files);
-  }
-
-  function handleDropzoneClick() {
-    dropzoneInputRef.current?.click();
-  }
-
-  function handleDropzoneInputChange(e: React.ChangeEvent<HTMLInputElement>) {
-    const files = Array.from(e.target.files ?? []);
-    void uploadFiles(files);
-    // Reset so the same file can be re-selected
-    if (dropzoneInputRef.current) dropzoneInputRef.current.value = "";
-  }
-
-  // Legacy file input (kept for compatibility, now hidden)
-  function handleLegacyUpload() {
-    const files = Array.from(fileInputRef.current?.files ?? []);
-    void uploadFiles(files);
-    if (fileInputRef.current) fileInputRef.current.value = "";
-  }
+  // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
-    <div className="chat-layout">
-      <div className="chat-header">
-        <h2>Compliance Interview</h2>
-        <div style={{ display: "flex", gap: "0.5rem" }}>
-          <button
-            className="btn btn-secondary"
-            onClick={handleDownloadReport}
-          >
-            Download report
-          </button>
-        </div>
-      </div>
-
-      <div className="chat-messages">
-        {messages.length === 0 && (
-          <p className="status-text">
-            The agent will begin the interview once you send your first message.
-          </p>
-        )}
-        {messages.map((msg) => (
-          <div key={msg.id} className={`msg ${msg.role}`}>
-            {msg.text}
-          </div>
-        ))}
-        {sending && (
-          <div className="msg assistant status-text">Thinking…</div>
-        )}
-        <div ref={messagesEndRef} />
-      </div>
-
-      {error && <p className="error-text">{error}</p>}
-
-      {/* Drag-and-drop dropzone */}
-      <div
-        className={`dropzone${dropActive ? " active" : ""}`}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-        onClick={handleDropzoneClick}
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => {
-          if (e.key === "Enter" || e.key === " ") handleDropzoneClick();
-        }}
-        aria-label="Upload source documents"
-      >
-        <input
-          ref={dropzoneInputRef}
-          type="file"
-          multiple
-          style={{ display: "none" }}
-          onChange={handleDropzoneInputChange}
-        />
-        {uploading ? (
-          <span>Uploading…</span>
-        ) : (
-          <span>
-            Drop source documents here, or <strong>click to browse</strong>
-          </span>
-        )}
-      </div>
-
-      {/* Uploads panel */}
-      {uploads.length > 0 && (
-        <div className="uploads">
-          <p className="hint">Uploaded documents</p>
-          {uploads.map((u) => {
-            const state = loadStates[u.name] ?? "idle";
-            return (
-              <div key={u.name} className="upload-row">
-                <span className="upload-name" title={u.name}>{u.name}</span>
-                <span className="upload-size">{formatBytes(u.size)}</span>
-                {state === "too-large" ? (
-                  <span className="note">
-                    Too large to load fully — the agent will read it on demand instead.
-                  </span>
-                ) : state === "loaded" ? (
-                  <span className="loaded-badge">Loaded ✓</span>
-                ) : (
-                  <button
-                    className="btn btn-secondary"
-                    disabled={state === "loading"}
-                    onClick={() => void handleLoadIntoContext(u.name)}
-                  >
-                    {state === "loading" ? "Loading…" : "Load into context"}
-                  </button>
-                )}
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Hidden legacy file input — kept for reference, superseded by dropzone */}
-      <input
-        ref={fileInputRef}
-        type="file"
-        multiple
-        style={{ display: "none" }}
-        onChange={handleLegacyUpload}
+    <div className="chat-page-layout">
+      {/* Left sidebar — documents */}
+      <DocumentsSidebar
+        sessionId={sessionId}
+        files={files}
+        onFilesChanged={() => void refreshFiles()}
+        onAssistantMessage={(text) => appendMessage("assistant", text)}
+        onError={(msg) => setError(msg)}
       />
 
-      <div className="chat-input-bar">
-        <textarea
-          rows={2}
-          placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
-          disabled={sending}
+      {/* Center — chat */}
+      <main className="chat-center">
+        <div className="chat-header">
+          <h2>Compliance Interview</h2>
+        </div>
+
+        <div className="chat-messages">
+          {messages.length === 0 && !busy && (
+            <p className="status-text">
+              The agent will begin the interview once you send your first message.
+            </p>
+          )}
+
+          {messages.map((msg) => (
+            <div key={msg.id} className={`msg ${msg.role}`}>
+              {msg.text}
+            </div>
+          ))}
+
+          {/* In-progress streaming bubble */}
+          {streamingText !== null && (
+            <div className="msg assistant msg-streaming">
+              {streamingText || <span className="msg-streaming-cursor" />}
+            </div>
+          )}
+
+          {/* Thinking indicator (shown when busy but no text yet) */}
+          <Thinking active={busy && streamingText === ""} reasoning={reasoningText} />
+
+          <div ref={messagesEndRef} />
+        </div>
+
+        {error && <p className="error-text">{error}</p>}
+
+        <div className="chat-input-bar">
+          <textarea
+            rows={2}
+            placeholder="Type a message… (Enter to send, Shift+Enter for newline)"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={handleKeyDown}
+            disabled={busy}
+            aria-label="Message input"
+          />
+          <button
+            className="btn btn-primary"
+            disabled={busy || !input.trim()}
+            onClick={() => void handleSend()}
+          >
+            {busy ? "Sending…" : "Send"}
+          </button>
+        </div>
+      </main>
+
+      {/* Right sidebar — status */}
+      <aside className="status-sidebar">
+        <ContextMeter
+          usedTokens={usedTokens}
+          contextLimit={contextLimit}
+          pct={contextPct}
         />
-        <button
-          className="btn btn-primary"
-          disabled={sending || !input.trim()}
-          onClick={() => void handleSend()}
-        >
-          Send
-        </button>
-      </div>
+        <TodoPanel todos={todos} />
+      </aside>
     </div>
   );
 }

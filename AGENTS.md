@@ -49,7 +49,7 @@ The application is a **two-service Docker Compose project**:
   │                ├─ agent: fact-checker (subagent)               │
   │                ├─ skills: csrd-esrs, esg-reporting             │
   │                ├─ plugin: report-compaction (MIT)              │
-  │                └─ MCP: doc-generate, fact-check (stubs)        │
+  │                └─ MCP: workspace(delete) + doc-gen/fact (stubs)│
   │  converter     MarkItDown -> Markdown   :8000 (internal, MIT)  │
   │                                                                │
   │  volume: workspaces ── mounted at /workspaces in app+opencode  │
@@ -84,6 +84,16 @@ appears (an HTML table became a Markdown table); the agent reads it; the **"Load
 full file into context"** button (`/api/context`) injects the file's markdown;
 and the engine boots clean with the `report-compaction` plugin present.
 
+Also verified (2026-06, UI/feature pass): **SSE streaming** (`/api/chat/stream`)
+renders token-by-token with a thinking animation + timer and a live **%-context
+meter** (deepseek-v4-flash = **1,000,000** token context); the left **"documents in
+the environment"** sidebar lists the workspace and downloads any file as its
+original / `.md` / **PDF** / **DOCX** (magic bytes verified `%PDF` / `PK`); a file
+is **directly deletable only before the next message** (otherwise `409` → ask the
+model, which calls the `workspace_delete_file` MCP tool — verified removing a file
+end-to-end); and the model's **reasoning is kept out of the answer bubble** (routed
+to the Thinking box).
+
 ## 3. Repository layout
 
 > **On-disk location & the AGENTS.md hardlink:** the repo root is
@@ -112,7 +122,7 @@ docker/
   app.Dockerfile           Next.js UI+BFF image (multi-stage build)
   converter.Dockerfile     MarkItDown document->markdown service (python, MIT)
 .dockerignore              keep build context lean (no node_modules/.git/.env)
-converter/app.py           FastAPI /convert (MarkItDown) + /health
+converter/app.py           FastAPI /convert (MarkItDown) + /render (md->PDF/DOCX) + /health
 goals/
   goal_csrd_esrs.md        a selectable goal (frontmatter id/title/agent/skill/template)
   goal_esg.md
@@ -128,25 +138,32 @@ prompts/
 .opencode/plugins/
   report-compaction.js     MIT plugin: inject goal+STATUS+[DATA NEEDED] at compaction
 mcp/
-  doc-generate/index.mjs   MCP stub: render report.md -> PDF/DOCX
+  workspace/index.mjs      MCP (ENABLED, zero-dep): delete_file under /workspaces
+  doc-generate/index.mjs   MCP stub: SUPERSEDED by converter /render (md->PDF/DOCX)
   fact-check/index.mjs     MCP stub: verify claims via web search backend
   doc-ingest/index.mjs     stub, SUPERSEDED by the converter service (safe to delete)
 src/
   app/
     page.tsx               goal dropdown (server) + _components/GoalPicker.tsx (client)
-    chat/[sessionId]/page.tsx   chat UI: drag-drop upload + load-to-context
+    chat/[sessionId]/page.tsx   chat UI: streaming + docs sidebar + todos + %context
     api/sessions/route.ts  POST: create session + provision workspace + goal.md
-    api/chat/route.ts      POST: relay a message to opencode
+    api/chat/route.ts      POST: non-stream relay (used by load-to-context)
+    api/chat/stream/route.ts       POST: SSE stream a turn (text/reasoning/todos/usage)
+    api/session/[id]/state/route.ts GET: %context tokens + todos + status
     api/upload/route.ts    POST: save upload + auto-convert to markdown
     api/uploads/route.ts   GET: list a session's uploaded source files
     api/context/route.ts   POST: inject a full file's markdown into the chat (capped)
+    api/files/route.ts     GET: env files (+formats, deletable?) · DELETE: direct delete
+    api/files/ask-delete/route.ts  POST: ask the model to delete (workspace MCP)
+    api/download/route.ts  GET: download a file as original/.md/.pdf/.docx
+    _components/           GoalPicker, DocumentsSidebar, FileMenu, Thinking, ContextMeter, TodoPanel
     layout.tsx, globals.css
   lib/
     goals.ts               load goals/*.md (frontmatter + body)
-    converter.ts           server-only client for the MarkItDown service
-    opencode.ts            server-only REST client (createSession, sendMessage)
-    workspace.ts           server-only FS helpers (provision, uploads, goal.md)
-  types/index.ts           shared types (Goal, ...)
+    converter.ts           server-only client for the converter service
+    opencode.ts            server-only REST client (sessions, prompt_async, /event, tokens, todos)
+    workspace.ts           server-only FS helpers (provision, uploads, goal.md, .sessions state, env files)
+  types/index.ts           shared types (Goal, EnvFile, StreamEvent, ...)
 vendor/opencode/           vendored opencode fork (MIT) — see §4
 workspaces/                local placeholder (gitignored); real workspaces live
                            in the `workspaces` docker volume (see §8)
@@ -211,9 +228,25 @@ Base URL = `OPENCODE_SERVER_URL` (in Docker: `http://opencode:4096`; host dev:
   `{info, parts}` (assistant text is in `parts[].text` where `type==="text"`).
   **`model` is an object** `{providerID, modelID}` (e.g.
   `{providerID:"opencode-go", modelID:"deepseek-v4-flash"}`), not a string.
-- `POST /session/:id/prompt_async` → `204` (fire-and-forget; needed for SSE).
-- `GET /event` → SSE stream (for token streaming + interactive tools — not wired yet).
+- `POST /session/:id/prompt_async?directory=<dir>` → `204` (fire-and-forget; used
+  for streaming).
+- `GET /event?directory=<dir>` → SSE stream of `{id,type,properties}`. **CRITICAL
+  gotcha (cost real debugging):** the engine **pre-filters `/event` by the instance
+  directory**, so you MUST open it with the SAME `?directory=` the session is bound
+  to, or you receive *none* of that session's events. Per turn it emits
+  `session.status {type:busy|idle}`, `session.idle` (terminal), `message.part.delta`
+  ({sessionID,messageID,partID,field,delta}), `message.part.updated` (part.type incl.
+  `reasoning`), and `todo.updated`. Filter by `properties.sessionID`.
+- `GET /session/:id` (cumulative `tokens`), `GET /session/:id/todo`,
+  `GET /session/status`, `GET /provider` (`…deepseek-v4-flash.limit.context` =
+  1,000,000) — power the %-context meter and the live todo panel.
 - `GET /agent` → lists configured agents (used to sanity-check config injection).
+
+Our **BFF endpoints** (the UI calls these): `POST /api/sessions`,
+`POST /api/chat/stream` (SSE; relays the engine stream as `{type:text|reasoning|
+todos|status|usage|done|error}`), `GET /api/session/:id/state`, `POST /api/upload`,
+`GET /api/uploads`, `POST /api/context`, `GET /api/files` + `DELETE /api/files`,
+`POST /api/files/ask-delete`, `GET /api/download?name=&format=`.
 
 Config is injected into the engine via env (see docker-compose.yml):
 `OPENCODE_CONFIG=/config/opencode.json`, `OPENCODE_CONFIG_DIR=/config/.opencode`,
@@ -238,11 +271,24 @@ and picking up stray configs — the original collision cause).
   report template in `assets/` is **copied into the session workspace** at
   init (the agent can't read repo files outside its sandbox — verified: it tries
   the bundled path, is denied, and falls back to the in-workspace copy).
-- **MCP servers** (`mcp/`, declared in `opencode.json`, `enabled: false` — stubs):
-  - `doc-generate`: `render_report` (report.md → PDF/DOCX) — still to implement.
-  - `fact-check`: `verify_claim` (pluggable web-search backend) — still to implement.
-  - `doc-ingest` is **superseded** by the automatic `converter` service (below);
-    the stub remains but is unused and safe to delete.
+- **MCP servers** (`mcp/`, declared in `opencode.json`):
+  - `workspace` (**enabled**): `delete_file` — a **zero-dependency** stdio server
+    (bun/node builtins only; `command: ["bun","run","/config/mcp/workspace/index.mjs"]`
+    because the bun engine image lacks `node` and our MCP SDK isn't installed there)
+    that deletes a file (+ its `.md` sidecar) under `/workspaces`. It exists because
+    opencode has **no built-in delete tool** and we deny `bash`; it powers the "ask
+    the model to delete" flow.
+  - `doc-generate` / `fact-check` (`enabled: false`, stubs). `doc-generate` is
+    **superseded** by the converter `/render` (md→PDF/DOCX); `fact-check` still TBD.
+  - `doc-ingest` is **superseded** by the `converter` service; safe to delete.
+- **Reasoning split.** opencode emits the model's chain-of-thought as `reasoning`
+  parts; `/api/chat/stream` tracks reasoning `partID`s and routes their deltas to a
+  `reasoning` SSE frame (shown in the Thinking box) so the answer stays clean. (A
+  prompt rule also suppresses step-narration, but deepseek still leaks ~one "Let
+  me…" preamble — a known minor limitation.)
+- **`converter` does both directions:** `POST /convert` (file→Markdown, MarkItDown)
+  and `POST /render` (`{markdown,format:"pdf"|"docx"}`→binary, via `markdown`+
+  `weasyprint` (BSD) and `htmldocx`+`python-docx` (MIT) — all business-friendly).
 
 - **Goals** (`goals/goal_*.md`): each is frontmatter (`id, title, agent, skill,
   template`) + a plain-language body. `src/lib/goals.ts` loads them; the home page
@@ -322,21 +368,25 @@ and picking up stray configs — the original collision cause).
 
 ## 12. Status & roadmap (deferred)
 
-Done: scaffold, vendored opencode, the **containerized app** (now app + opencode +
-converter), goal dropdown from `goals/`, **automatic document→Markdown conversion**
-on upload (MarkItDown), drag-and-drop upload + "load full file into context"
-(capped), the MIT **report-compaction** plugin + the **DCP opt-in** overlay, and an
-**end-to-end verified** flow.
+Done: scaffold, vendored opencode, the **containerized app** (app + opencode +
+converter), goal dropdown from `goals/`, automatic document→Markdown conversion on
+upload (MarkItDown), drag-and-drop upload + "load full file into context" (capped),
+the MIT **report-compaction** plugin + the **DCP opt-in** overlay, **SSE streaming
+chat** (thinking animation + timer; reasoning split out of the answer), a live
+**%-context meter** + native **todo panel**, a left **"documents in the
+environment"** sidebar, **PDF/DOCX/MD download & export** (converter `/render`), the
+**delete rule** (direct only before the next message; else ask-the-model via the
+zero-dep `workspace` MCP `delete_file`), and an **end-to-end verified** flow.
 **Deferred** (not yet built):
 
-- SSE token streaming in `/api/chat` (via `prompt_async` + `GET /event`), which
-  also unlocks re-enabling the structured interactive `question` tool.
-- `doc-generate` MCP (report.md → PDF/DOCX export) + `fact-check` MCP; remove the
-  superseded `doc-ingest` stub.
-- `/api/report` download route + the UI "Download report" button.
-- Non-root container hardening (`USER` + `/workspaces` volume ownership),
-  restricted egress (allow only the model API + fact-check domains), resource limits.
+- `fact-check` MCP (structured `verify_claim`). Remove the superseded
+  `doc-ingest` / `doc-generate` stubs.
+- Cleaner step-narration (deepseek still leaks ~one "Let me…" preamble despite the
+  prompt rule) and re-enabling the structured interactive `question` tool (now
+  possible over SSE).
+- Non-root container hardening, restricted egress, resource limits.
 - Auth on the BFF routes (currently unauthenticated).
-- Durable session↔workspace persistence (currently a file-backed `.sessions` map).
+- Durable session↔workspace persistence (the `.sessions` map is now JSON
+  `{workspaceId, messageCount, uploads}`, still file-backed).
 - Time/clock knowledge MCP (explicitly deferred by the product owner).
 - Slimming the vendored fork (delete unused `packages/*`).

@@ -70,7 +70,12 @@ Set `OPENCODE_SERVER_URL` / `WORKSPACES_ROOT` consistently for host mode.
 
 Working end-to-end in the container stack: goal dropdown, per-session workspace,
 drag-and-drop upload with **automatic Markdown conversion**, "load full file into
-context", the agent loads the relevant skill, interviews the user (plain-text
-Q&A), and writes `output/report.md` with `[DATA NEEDED: …]` placeholders and no
-fabricated figures. Still stubbed/deferred: PDF/DOCX **export** + fact-check MCP,
-SSE streaming, the report-download route, and auth. See the roadmap in `AGENTS.md`.
+context", **streaming chat** (token-by-token with a thinking animation + timer; the
+model's reasoning is kept out of the answer bubble), a live **% context** meter and
+a native **todo** panel, and a left **"documents in the environment"** sidebar with
+per-file **download/export** (original · `.md` · **PDF** · **DOCX**) plus a delete
+rule (direct delete only before the next message; otherwise ask the model, which
+uses a `workspace` MCP tool). The agent loads the relevant skill, interviews the
+user, and writes `output/report.md` with `[DATA NEEDED: …]` placeholders and no
+fabricated figures. Deferred: a structured fact-check MCP, BFF auth, container
+hardening, and durable session persistence. See the roadmap in `AGENTS.md`.
