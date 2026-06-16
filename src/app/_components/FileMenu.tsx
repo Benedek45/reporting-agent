@@ -16,7 +16,8 @@ interface FileMenuProps {
   loadState: "idle" | "loading" | "loaded" | "too-large";
   onLoadIntoContext: (fileName: string) => void;
   onDeleteDone: () => void;
-  onAskDeleteDone: (reply: string) => void;
+  /** Called with the file name so the parent can route the ask-delete as a stream action */
+  onAskDeleteDone: (fileName: string) => void;
   onError: (msg: string) => void;
 }
 
@@ -61,7 +62,6 @@ export default function FileMenu({
   function handleDownload(format: DownloadFormat) {
     setOpen(false);
     const url = `/api/download?sessionId=${encodeURIComponent(sessionId)}&name=${encodeURIComponent(file.name)}&format=${encodeURIComponent(format)}`;
-    // Open in new tab to trigger browser download
     window.open(url, "_blank", "noopener,noreferrer");
   }
 
@@ -80,8 +80,8 @@ export default function FileMenu({
       });
 
       if (res.status === 409) {
-        // Fall back to ask-delete
-        await handleAskDelete();
+        // Cannot delete directly — route through ask-delete stream action
+        onAskDeleteDone(file.name);
         return;
       }
 
@@ -96,25 +96,9 @@ export default function FileMenu({
     }
   }
 
-  async function handleAskDelete() {
+  function handleAskDelete() {
     setOpen(false);
-    try {
-      const res = await fetch("/api/files/ask-delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sessionId, name: file.name }),
-      });
-
-      if (!res.ok) {
-        const body = (await res.json().catch(() => ({}))) as { error?: string };
-        throw new Error(body.error ?? `Ask-delete failed (${res.status})`);
-      }
-
-      const data = (await res.json()) as { reply: string };
-      onAskDeleteDone(data.reply);
-    } catch (err) {
-      onError(err instanceof Error ? err.message : "Ask-delete failed");
-    }
+    onAskDeleteDone(file.name);
   }
 
   return (
@@ -182,7 +166,7 @@ export default function FileMenu({
               <button
                 className="file-menu-item"
                 role="menuitem"
-                onClick={() => void handleAskDelete()}
+                onClick={handleAskDelete}
               >
                 Ask model to delete
               </button>

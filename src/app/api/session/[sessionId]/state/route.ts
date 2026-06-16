@@ -2,12 +2,13 @@ export const runtime = "nodejs";
 
 import { NextRequest } from "next/server";
 import {
-  getSessionTokens,
+  getSessionTokensDetail,
   getProviderContextLimit,
   getTodos,
   getSessionStatus,
 } from "@/lib/opencode";
-import type { TodoItem } from "@/types";
+import { readSessionState } from "@/lib/workspace";
+import type { TodoItem, ContextBreakdownItem } from "@/types";
 
 interface StateResponse {
   usedTokens: number;
@@ -15,6 +16,7 @@ interface StateResponse {
   pct: number;
   todos: TodoItem[];
   status: string;
+  breakdown: ContextBreakdownItem[];
 }
 
 export async function GET(
@@ -28,14 +30,42 @@ export async function GET(
   }
 
   try {
-    const [usedTokens, contextLimit, todos, status] = await Promise.all([
-      getSessionTokens(sessionId),
+    const [tokensDetail, contextLimit, todos, status] = await Promise.all([
+      getSessionTokensDetail(sessionId),
       getProviderContextLimit(),
       getTodos(sessionId).catch((): TodoItem[] => []),
       getSessionStatus(sessionId).catch(() => "idle"),
     ]);
 
+    const usedTokens =
+      (tokensDetail.input ?? 0) +
+      (tokensDetail.output ?? 0) +
+      (tokensDetail.cache?.read ?? 0) +
+      (tokensDetail.cache?.write ?? 0);
+
     const pct = Math.min(100, Math.round((usedTokens / contextLimit) * 100));
+
+    // Build approximate breakdown
+    const reasoningTokens = tokensDetail.reasoning ?? 0;
+    const state = await readSessionState(sessionId).catch(() => ({
+      workspaceId: sessionId,
+      messageCount: 0,
+      uploads: {} as Record<string, number>,
+      loadedContextBytes: 0,
+    }));
+    const documentTokens = Math.ceil((state.loadedContextBytes ?? 0) / 4);
+    const systemBaseline = 6000; // approximate constant
+    const conversationTokens = Math.max(
+      0,
+      usedTokens - reasoningTokens - documentTokens - systemBaseline
+    );
+
+    const breakdown: ContextBreakdownItem[] = [
+      { label: "Reasoning", tokens: reasoningTokens },
+      { label: "Documents", tokens: documentTokens },
+      { label: "System & tools (approx.)", tokens: systemBaseline },
+      { label: "Conversation", tokens: conversationTokens },
+    ];
 
     const response: StateResponse = {
       usedTokens,
@@ -43,6 +73,7 @@ export async function GET(
       pct,
       todos,
       status,
+      breakdown,
     };
 
     return Response.json(response);

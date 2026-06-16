@@ -37,7 +37,10 @@
         "grep": "allow",
         "list": "allow",
         "bash": "deny",
-        "external_directory": "deny",
+        "external_directory": {
+          "**": "deny",
+          "/config/.opencode/skills/**": "allow"
+        },
         "webfetch": "allow",
         "websearch": "allow",
         "question": "deny",
@@ -81,6 +84,20 @@
       "command": ["bun", "run", "/config/mcp/workspace/index.mjs"],
       "enabled": true
     },
+    "time": {
+      "type": "local",
+      "command": ["bun", "run", "/config/mcp/time/index.mjs"],
+      "enabled": true
+    },
+    "fact-check": {
+      "type": "local",
+      "command": ["bun", "run", "/config/mcp/fact-check/index.mjs"],
+      "enabled": true,
+      "environment": {
+        "FACTCHECK_API_KEY": "{env:FACTCHECK_API_KEY}"
+      },
+      "timeout": 30000
+    },
     "doc-ingest": {
       "type": "local",
       "command": ["node", "mcp/doc-ingest/index.mjs"],
@@ -91,16 +108,6 @@
       "type": "local",
       "command": ["node", "mcp/doc-generate/index.mjs"],
       "enabled": false,
-      "timeout": 30000
-    },
-    "fact-check": {
-      "type": "local",
-      "command": ["node", "mcp/fact-check/index.mjs"],
-      "enabled": false,
-      "environment": {
-        "FACTCHECK_BACKEND": "{env:FACTCHECK_BACKEND}",
-        "FACTCHECK_API_KEY": "{env:FACTCHECK_API_KEY}"
-      },
       "timeout": 30000
     }
   }

@@ -1,5 +1,7 @@
 // server-only
 
+import type { MessageHistoryItem } from "@/types";
+
 const BASE_URL =
   process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096";
 
@@ -9,10 +11,33 @@ const DEFAULT_MODEL = "opencode-go/deepseek-v4-flash";
 interface OpenCodePart {
   type: string;
   text?: string;
+  id?: string;
+  tool?: string;
+  callID?: string;
+  state?: {
+    status?: string;
+    input?: unknown;
+    output?: string;
+    error?: string;
+    title?: string;
+  };
+}
+
+interface OpenCodeMessageInfo {
+  id: string;
+  role: "user" | "assistant";
+  time: {
+    created: number;
+  };
 }
 
 interface OpenCodeMessageResponse {
   info: unknown;
+  parts: OpenCodePart[];
+}
+
+interface OpenCodeHistoryEntry {
+  info: OpenCodeMessageInfo;
   parts: OpenCodePart[];
 }
 
@@ -26,7 +51,7 @@ interface OpenCodeModel {
   modelID: string;
 }
 
-interface OpenCodeTokens {
+export interface OpenCodeTokensDetail {
   input: number;
   output: number;
   reasoning: number;
@@ -37,7 +62,7 @@ interface OpenCodeTokens {
 }
 
 interface OpenCodeSessionDetail {
-  tokens: OpenCodeTokens;
+  tokens: OpenCodeTokensDetail;
   [key: string]: unknown;
 }
 
@@ -132,13 +157,17 @@ export async function createSession(
 export async function sendMessage(
   sessionId: string,
   text: string,
-  opts?: { agent?: string; model?: string; directory?: string }
+  opts?: { agent?: string; model?: string; directory?: string; system?: string }
 ): Promise<{ text: string }> {
-  const body = {
+  const body: Record<string, unknown> = {
     model: modelFromId(opts?.model ?? DEFAULT_MODEL),
     agent: opts?.agent ?? DEFAULT_AGENT,
     parts: [{ type: "text", text }],
   };
+
+  if (opts?.system) {
+    body["system"] = opts.system;
+  }
 
   const response = await request<OpenCodeMessageResponse>(
     withDirectory(`/session/${sessionId}/message`, opts?.directory),
@@ -163,13 +192,17 @@ export async function sendMessage(
 export async function promptAsync(
   sessionId: string,
   text: string,
-  opts?: { agent?: string; model?: string; directory?: string }
+  opts?: { agent?: string; model?: string; directory?: string; system?: string }
 ): Promise<void> {
-  const body = {
+  const body: Record<string, unknown> = {
     model: modelFromId(opts?.model ?? DEFAULT_MODEL),
     agent: opts?.agent ?? DEFAULT_AGENT,
     parts: [{ type: "text", text }],
   };
+
+  if (opts?.system) {
+    body["system"] = opts.system;
+  }
 
   const url = `${BASE_URL}${withDirectory(
     `/session/${encodeURIComponent(sessionId)}/prompt_async`,
@@ -226,6 +259,18 @@ export async function getSessionTokens(
 }
 
 /**
+ * Returns the full token breakdown for a session.
+ */
+export async function getSessionTokensDetail(
+  sessionId: string
+): Promise<OpenCodeTokensDetail> {
+  const detail = await request<OpenCodeSessionDetail>(
+    `/session/${encodeURIComponent(sessionId)}`
+  );
+  return detail.tokens;
+}
+
+/**
  * Returns the context window limit for deepseek-v4-flash from the opencode-go
  * provider. Result is cached in-module. Falls back to 128 000 if not found.
  */
@@ -268,4 +313,98 @@ export async function getSessionStatus(
     "/session/status"
   );
   return statusMap[sessionId]?.type ?? "idle";
+}
+
+/**
+ * Aborts the current turn for a session.
+ * POST /session/:id/abort?directory=
+ */
+export async function abortSession(
+  sessionId: string,
+  directory: string
+): Promise<void> {
+  const url = `${BASE_URL}${withDirectory(
+    `/session/${encodeURIComponent(sessionId)}/abort`,
+    directory
+  )}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "(unreadable body)");
+    throw new Error(
+      `OpenCode abort error ${res.status} ${res.statusText}: ${errBody}`
+    );
+  }
+}
+
+/**
+ * Reverts a session to a prior message, deleting messages >= messageID.
+ * POST /session/:id/revert?directory= body {messageID}
+ * Returns 409 if the session is busy.
+ */
+export async function revertSession(
+  sessionId: string,
+  messageID: string,
+  directory: string
+): Promise<void> {
+  const url = `${BASE_URL}${withDirectory(
+    `/session/${encodeURIComponent(sessionId)}/revert`,
+    directory
+  )}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ messageID }),
+  });
+
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => "(unreadable body)");
+    throw new Error(
+      `OpenCode revert error ${res.status} ${res.statusText}: ${errBody}`
+    );
+  }
+}
+
+/**
+ * Fetches the message history for a session.
+ * GET /session/:id/message?directory=
+ * Concatenates text parts (excluding reasoning) for each message's text.
+ * Collects tool parts into the tools array.
+ */
+export async function getMessages(
+  sessionId: string,
+  directory: string
+): Promise<MessageHistoryItem[]> {
+  const entries = await request<OpenCodeHistoryEntry[]>(
+    withDirectory(
+      `/session/${encodeURIComponent(sessionId)}/message`,
+      directory
+    )
+  );
+
+  return entries.map((entry) => {
+    const textParts = entry.parts
+      .filter((p) => p.type === "text" && typeof p.text === "string")
+      .map((p) => p.text as string);
+
+    const tools = entry.parts
+      .filter((p) => p.type === "tool" && typeof p.tool === "string")
+      .map((p) => ({
+        name: p.tool as string,
+        status: p.state?.status ?? "unknown",
+        input: p.state?.input,
+        output: p.state?.output,
+      }));
+
+    return {
+      id: entry.info.id,
+      role: entry.info.role,
+      text: textParts.join(""),
+      createdAt: entry.info.time.created,
+      tools,
+    };
+  });
 }

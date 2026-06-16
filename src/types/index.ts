@@ -60,6 +60,12 @@ export interface SessionState {
   workspaceId: string;
   messageCount: number;
   uploads: Record<string, number>; // fileName → messageCount at upload time
+  /** Epoch ms of the last time-injection sent to the model (undefined = never). */
+  lastTimeUpdateMs?: number;
+  /** Goal body text stored at session creation for first-turn injection. */
+  goalText?: string;
+  /** Cumulative bytes of files loaded into context via /api/context. */
+  loadedContextBytes?: number;
 }
 
 export interface SessionTokenUsage {
@@ -74,13 +80,54 @@ export interface TodoItem {
   priority: string;
 }
 
+// ── Tool event ────────────────────────────────────────────────────────────────
+
+export interface ToolEvent {
+  id: string;
+  name: string;
+  status: "pending" | "running" | "completed" | "error";
+  title?: string;
+  input?: unknown;
+  output?: string;
+  error?: string;
+}
+
+// ── Context breakdown ─────────────────────────────────────────────────────────
+
+export interface ContextBreakdownItem {
+  label: string;
+  tokens: number;
+}
+
+// ── Message history ───────────────────────────────────────────────────────────
+
+export interface MessageHistoryItem {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  createdAt: number;
+  tools: {
+    name: string;
+    status: string;
+    input?: unknown;
+    output?: string;
+  }[];
+}
+
 // ── SSE event union (downstream protocol from /api/chat/stream) ───────────────
 
 export type StreamEvent =
   | { type: "text"; delta: string }
   | { type: "reasoning"; delta: string }
+  | ({ type: "tool" } & ToolEvent)
   | { type: "todos"; todos: TodoItem[] }
   | { type: "status"; status: string }
-  | { type: "usage"; usedTokens: number; contextLimit: number; pct: number }
+  | {
+      type: "usage";
+      usedTokens: number;
+      contextLimit: number;
+      pct: number;
+      breakdown: ContextBreakdownItem[];
+    }
   | { type: "done" }
   | { type: "error"; error: string };

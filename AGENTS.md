@@ -49,7 +49,7 @@ The application is a **two-service Docker Compose project**:
   │                ├─ agent: fact-checker (subagent)               │
   │                ├─ skills: csrd-esrs, esg-reporting             │
   │                ├─ plugin: report-compaction (MIT)              │
-  │                └─ MCP: workspace(delete) + doc-gen/fact (stubs)│
+  │                └─ MCP: workspace(delete) · time · fact-check   │
   │  converter     MarkItDown -> Markdown   :8000 (internal, MIT)  │
   │                                                                │
   │  volume: workspaces ── mounted at /workspaces in app+opencode  │
@@ -94,6 +94,26 @@ model, which calls the `workspace_delete_file` MCP tool — verified removing a 
 end-to-end); and the model's **reasoning is kept out of the answer bubble** (routed
 to the Thinking box).
 
+Also verified (2026-06, UI/feature pass 2 — Playwright + API): the **`time` MCP**
+(`time_get_current_time`) and **`fact-check` MCP** (`fact-check_verify_claim`,
+Tavily-backed; returns `NEEDS_CONFIG` without `FACTCHECK_API_KEY`, and the agent
+then falls back to web-fetch) both stream as **tool-call chips** in the chat;
+**assistant markdown is rendered** (react-markdown + remark-gfm — bold/tables);
+the **single context bar shows an approximate breakdown** (System & tools / Documents /
+Reasoning / Conversation); **dark mode** toggles + persists (`data-theme`);
+**timestamps + pin** on every message; the **Documents sidebar groups Environment
+(uploads) vs Output (report)** and **goal.md is hidden** (its content is injected
+into the per-turn `system` instead, see §7); the **welcome message** renders
+client-side so the chat is never empty; **re-uploading a file replaces it and a
+real unified diff is sent to the agent** (text-file baseline bug fixed — capture
+old source before overwrite); the chat composer now uses a normal consumer-chat
+layout (full-width pill input + in-composer stop); and noisy internal permission
+errors are hidden from non-technical users. API-tested: `time_get_current_time`,
+`fact-check_verify_claim`, file replacement diff, and Hungarian first-turn setup
+without internal step narration or permission errors. Built/streamed but not yet
+click-tested: **stop** (`/api/chat/abort`), **edit-a-previous-message** (`revert` +
+re-prompt), **report preview** content, and **pin-navigate**.
+
 ## 3. Repository layout
 
 > **On-disk location & the AGENTS.md hardlink:** the repo root is
@@ -126,6 +146,7 @@ converter/app.py           FastAPI /convert (MarkItDown) + /render (md->PDF/DOCX
 goals/
   goal_csrd_esrs.md        a selectable goal (frontmatter id/title/agent/skill/template)
   goal_esg.md
+  goal_test.md             developer-only tool self-test goal
 scripts/enable-dcp.{sh,ps1}  one-command opt-in for the AGPL DCP plugin
 opencode.json              opencode runtime config (model, agents, skills, MCP, permissions)
 .env / .env.example        secrets + runtime config (.env is gitignored)
@@ -139,24 +160,28 @@ prompts/
   report-compaction.js     MIT plugin: inject goal+STATUS+[DATA NEEDED] at compaction
 mcp/
   workspace/index.mjs      MCP (ENABLED, zero-dep): delete_file under /workspaces
+  time/index.mjs           MCP (ENABLED, zero-dep): current date/time only
+  fact-check/index.mjs     MCP (ENABLED, zero-dep): Tavily-backed verify_claim
   doc-generate/index.mjs   MCP stub: SUPERSEDED by converter /render (md->PDF/DOCX)
-  fact-check/index.mjs     MCP stub: verify claims via web search backend
   doc-ingest/index.mjs     stub, SUPERSEDED by the converter service (safe to delete)
 src/
   app/
     page.tsx               goal dropdown (server) + _components/GoalPicker.tsx (client)
-    chat/[sessionId]/page.tsx   chat UI: streaming + docs sidebar + todos + %context
+    chat/[sessionId]/page.tsx   chat UI: streaming + tool chips + docs sidebar + todos + %context
     api/sessions/route.ts  POST: create session + provision workspace + goal.md
     api/chat/route.ts      POST: non-stream relay (used by load-to-context)
-    api/chat/stream/route.ts       POST: SSE stream a turn (text/reasoning/todos/usage)
+    api/chat/stream/route.ts       POST: SSE stream a turn (text/reasoning/tool/todos/usage)
+    api/chat/abort/route.ts        POST: stop current generation
     api/session/[id]/state/route.ts GET: %context tokens + todos + status
+    api/session/[id]/messages/route.ts GET: opencode history for render/edit/pin
     api/upload/route.ts    POST: save upload + auto-convert to markdown
     api/uploads/route.ts   GET: list a session's uploaded source files
     api/context/route.ts   POST: inject a full file's markdown into the chat (capped)
     api/files/route.ts     GET: env files (+formats, deletable?) · DELETE: direct delete
     api/files/ask-delete/route.ts  POST: ask the model to delete (workspace MCP)
+    api/report/route.ts     GET: report.md markdown for preview
     api/download/route.ts  GET: download a file as original/.md/.pdf/.docx
-    _components/           GoalPicker, DocumentsSidebar, FileMenu, Thinking, ContextMeter, TodoPanel
+    _components/           GoalPicker, DocumentsSidebar, FileMenu, Thinking, ContextMeter, TodoPanel, MarkdownMessage, ToolCallChip, ReportPreview, ThemeToggle
     layout.tsx, globals.css
   lib/
     goals.ts               load goals/*.md (frontmatter + body)
@@ -242,11 +267,27 @@ Base URL = `OPENCODE_SERVER_URL` (in Docker: `http://opencode:4096`; host dev:
   1,000,000) — power the %-context meter and the live todo panel.
 - `GET /agent` → lists configured agents (used to sanity-check config injection).
 
-Our **BFF endpoints** (the UI calls these): `POST /api/sessions`,
-`POST /api/chat/stream` (SSE; relays the engine stream as `{type:text|reasoning|
-todos|status|usage|done|error}`), `GET /api/session/:id/state`, `POST /api/upload`,
-`GET /api/uploads`, `POST /api/context`, `GET /api/files` + `DELETE /api/files`,
-`POST /api/files/ask-delete`, `GET /api/download?name=&format=`.
+Our **BFF endpoints** (the UI calls these): `POST /api/sessions` (→ `{sessionId,
+welcome}`); `POST /api/chat/stream` (SSE; body `{sessionId, text?, editMessageId?,
+loadFileName?}`; relays `{type:text|reasoning|**tool**|todos|status|usage|done|
+error}` where the `usage` frame carries an approximate `breakdown[]`; `editMessageId`
+triggers a `revert` then re-prompt; `loadFileName` injects a file's markdown via the
+per-turn `system`); `POST /api/chat/abort` (stop the current turn); `GET /api/session/
+:id/state` (tokens + todos + status + breakdown); `GET /api/session/:id/messages`
+(history with stable ids, timestamps, tool calls — powers render/edit/pin); `POST
+/api/upload` (auto-convert; **re-upload replaces + returns a unified `diff`**); `GET
+/api/uploads`; `POST /api/context`; `GET /api/files` (goal.md excluded) + `DELETE
+/api/files`; `POST /api/files/ask-delete`; `GET /api/report?sessionId` (report.md
+markdown for the preview pane); `GET /api/download?name=&format=`.
+
+opencode control endpoints used: `POST /session/:id/abort?directory=` (stop),
+`POST /session/:id/revert?directory=` `{messageID}` then re-prompt (edit/rewind;
+`/unrevert` cancels), `GET /session/:id/message?directory=` (history). Tool calls
+arrive on `/event` as `message.part.updated` with `part.type:"tool"`
+(`part.tool`=name, `part.state.status` pending→running→completed/error). Per-turn
+dynamic context (current date/time; "reply in the user's language"; the goal body
+on turn 1) is passed via the **`system` field** of `prompt_async`, which opencode
+**appends** to the agent prompt.
 
 Config is injected into the engine via env (see docker-compose.yml):
 `OPENCODE_CONFIG=/config/opencode.json`, `OPENCODE_CONFIG_DIR=/config/.opencode`,
@@ -259,7 +300,9 @@ and picking up stray configs — the original collision cause).
   - `compliance` — primary, default. Interviews the user **in plain text**
     (the chat is the Q&A loop), reads `uploads/`, writes `output/report.md`,
     delegates verification to `fact-checker`. `bash` denied; sandboxed to the
-    workspace (`external_directory: deny`).
+    workspace. `external_directory` is denied by default, with a narrow allow for
+    `/config/.opencode/skills/**` so skill assets/templates can be read without
+    surfacing permission errors in normal chats.
   - `fact-checker` — read-only subagent; verifies figures/claims; can web-fetch.
 - **No interactive `question` tool.** opencode's `question` tool *blocks* the
   synchronous `POST /message` call waiting for an answer the BFF can't supply
@@ -268,9 +311,10 @@ and picking up stray configs — the original collision cause).
   question tool requires the async/SSE path (see §11).
 - **Skills** (`.opencode/skills/<name>/SKILL.md`, loaded on demand by the native
   `skill` tool): `csrd-esrs`, `esg-reporting`. Each is **self-contained**; the
-  report template in `assets/` is **copied into the session workspace** at
-  init (the agent can't read repo files outside its sandbox — verified: it tries
-  the bundled path, is denied, and falls back to the in-workspace copy).
+  report template in `assets/` is **copied into the session workspace** at init.
+  The compliance agent also has narrow read access to `/config/.opencode/skills/**`
+  inside the engine container so native skill/template reads do not produce noisy
+  permission errors for the user.
 - **MCP servers** (`mcp/`, declared in `opencode.json`):
   - `workspace` (**enabled**): `delete_file` — a **zero-dependency** stdio server
     (bun/node builtins only; `command: ["bun","run","/config/mcp/workspace/index.mjs"]`
@@ -278,14 +322,23 @@ and picking up stray configs — the original collision cause).
     that deletes a file (+ its `.md` sidecar) under `/workspaces`. It exists because
     opencode has **no built-in delete tool** and we deny `bash`; it powers the "ask
     the model to delete" flow.
-  - `doc-generate` / `fact-check` (`enabled: false`, stubs). `doc-generate` is
-    **superseded** by the converter `/render` (md→PDF/DOCX); `fact-check` still TBD.
+  - `time` (**enabled**): `get_current_time` — zero-dependency stdio MCP. It only
+    returns the current date/time; it never schedules or auto-fires. Separately,
+    the BFF injects the current date/time via per-turn `system` on the first user
+    message and then only when the next user message arrives after 12+ hours.
+  - `fact-check` (**enabled**): `verify_claim` — zero-dependency stdio MCP backed
+    by Tavily when `FACTCHECK_API_KEY` is set. Without the key it returns
+    `NEEDS_CONFIG`; the compliance prompt tells the agent to fall back to
+    `webfetch`/`websearch` and flag the claim for manual verification.
+  - `doc-generate` (`enabled: false`, stub). It is **superseded** by the converter
+    `/render` endpoint (md→PDF/DOCX).
   - `doc-ingest` is **superseded** by the `converter` service; safe to delete.
-- **Reasoning split.** opencode emits the model's chain-of-thought as `reasoning`
-  parts; `/api/chat/stream` tracks reasoning `partID`s and routes their deltas to a
-  `reasoning` SSE frame (shown in the Thinking box) so the answer stays clean. (A
-  prompt rule also suppresses step-narration, but deepseek still leaks ~one "Let
-  me…" preamble — a known minor limitation.)
+- **Reasoning and tool-call split.** opencode emits reasoning as `reasoning` parts
+  and tools as `tool` parts; `/api/chat/stream` routes reasoning to the Thinking box
+  and tools to compact tool-call chips. Tool chips with `status:"error"` are hidden
+  in the consumer UI to avoid exposing internal permission/path errors to business
+  users. The prompt explicitly forbids visible setup narration; a Hungarian smoke
+  test confirmed the first visible answer skips "loading skill/template" chatter.
 - **`converter` does both directions:** `POST /convert` (file→Markdown, MarkItDown)
   and `POST /render` (`{markdown,format:"pdf"|"docx"}`→binary, via `markdown`+
   `weasyprint` (BSD) and `htmldocx`+`python-docx` (MIT) — all business-friendly).
@@ -293,8 +346,11 @@ and picking up stray configs — the original collision cause).
 - **Goals** (`goals/goal_*.md`): each is frontmatter (`id, title, agent, skill,
   template`) + a plain-language body. `src/lib/goals.ts` loads them; the home page
   shows them as a **dropdown**. On session create the BFF writes the body to
-  `<workspace>/goal.md`; the agent reads it first (prompt step 1) to learn the goal
-  and which skill to load. Add a goal = drop a new `.md` file, no code change.
+  `<workspace>/goal.md` for compaction/plugin continuity, stores it in session state,
+  and injects it into the first turn's per-message `system` context; `goal.md` is
+  hidden from the Documents sidebar. Add a goal = drop a new `.md` file, no code
+  change. `goal_test.md` is developer-only and explicitly lets the agent expose
+  internals while exercising tools.
 
 - **Documents are converted to Markdown automatically on upload.** The model only
   reads text, so `/api/upload` sends every non-text file to the **`converter`**
@@ -373,20 +429,24 @@ converter), goal dropdown from `goals/`, automatic document→Markdown conversio
 upload (MarkItDown), drag-and-drop upload + "load full file into context" (capped),
 the MIT **report-compaction** plugin + the **DCP opt-in** overlay, **SSE streaming
 chat** (thinking animation + timer; reasoning split out of the answer), a live
-**%-context meter** + native **todo panel**, a left **"documents in the
-environment"** sidebar, **PDF/DOCX/MD download & export** (converter `/render`), the
-**delete rule** (direct only before the next message; else ask-the-model via the
-zero-dep `workspace` MCP `delete_file`), and an **end-to-end verified** flow.
+**single %-context meter** with approximate breakdown + native **todo panel**, a left
+**Documents** sidebar grouped as Environment vs Output, **PDF/DOCX/MD download &
+export** (converter `/render`), the **delete rule** (direct only before the next
+message; else ask-the-model via the zero-dep `workspace` MCP `delete_file`),
+**time knowledge** (first turn + next user turn after 12h, never auto-fires),
+Tavily-backed **fact-check MCP** (with NEEDS_CONFIG fallback), markdown-rendered
+assistant replies, timestamps, pins, dark mode, a consumer-chat composer, file
+replacement diffs, and an **end-to-end verified** flow.
 **Deferred** (not yet built):
 
-- `fact-check` MCP (structured `verify_claim`). Remove the superseded
-  `doc-ingest` / `doc-generate` stubs.
-- Cleaner step-narration (deepseek still leaks ~one "Let me…" preamble despite the
-  prompt rule) and re-enabling the structured interactive `question` tool (now
-  possible over SSE).
+- Remove the superseded `doc-ingest` / `doc-generate` stubs.
+- Re-enable the structured interactive `question` tool if desired (now possible
+  over SSE, but currently plain-text Q&A is more consumer-friendly).
 - Non-root container hardening, restricted egress, resource limits.
 - Auth on the BFF routes (currently unauthenticated).
 - Durable session↔workspace persistence (the `.sessions` map is now JSON
   `{workspaceId, messageCount, uploads}`, still file-backed).
-- Time/clock knowledge MCP (explicitly deferred by the product owner).
+- Fully click-test stop/edit/report-preview/pin-navigation in the browser (API and
+  rendering paths are built; the main live smoke covered tool chips, markdown,
+  context, dark mode, and Hungarian first-turn behavior).
 - Slimming the vendored fork (delete unused `packages/*`).

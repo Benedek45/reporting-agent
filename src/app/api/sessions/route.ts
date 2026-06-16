@@ -43,13 +43,20 @@ export async function POST(req: NextRequest): Promise<Response> {
       directory
     );
 
-    await ensureWorkspace(sessionId, goal, workspaceId);
+    // Store goalText in session state so it can be injected on the first turn
+    // without re-reading the goal file.
+    await ensureWorkspace(sessionId, goal, workspaceId, { goalText: goal.body });
     await writeGoalFile(sessionId, goal);
 
     // TODO(scaffold): replace the file-backed workspace mapping with durable
     // session persistence once the BFF has a database.
 
-    return Response.json({ sessionId });
+    const welcome =
+      `Hi — I'll help you put together your ${goal.title}. ` +
+      `I'll ask a few questions and request documents as we go. ` +
+      `To get started, tell me about the organisation and reporting period this report should cover.`;
+
+    return Response.json({ sessionId, welcome });
   } catch (err) {
     console.error("[POST /api/sessions]", err);
     return Response.json(

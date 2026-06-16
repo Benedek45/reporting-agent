@@ -40,6 +40,7 @@ All in `.env` (gitignored):
 | `WORKSPACES_ROOT` | Per-session workspace root, shared by both containers | `/workspaces` (compose) |
 | `CONVERTER_URL` | Internal MarkItDown converter service | `http://converter:8000` (compose) |
 | `MAX_CONTEXT_FILE_BYTES` | Cap for the "load full file into context" button | `200000` |
+| `FACTCHECK_API_KEY` | Optional Tavily key for the `fact-check` MCP. If unset, the tool returns `NEEDS_CONFIG` and the agent falls back to web fetch/search. | — |
 
 ### Optional: Dynamic Context Pruning (DCP)
 
@@ -68,14 +69,19 @@ Set `OPENCODE_SERVER_URL` / `WORKSPACES_ROOT` consistently for host mode.
 
 ## Status
 
-Working end-to-end in the container stack: goal dropdown, per-session workspace,
-drag-and-drop upload with **automatic Markdown conversion**, "load full file into
-context", **streaming chat** (token-by-token with a thinking animation + timer; the
-model's reasoning is kept out of the answer bubble), a live **% context** meter and
-a native **todo** panel, and a left **"documents in the environment"** sidebar with
-per-file **download/export** (original · `.md` · **PDF** · **DOCX**) plus a delete
-rule (direct delete only before the next message; otherwise ask the model, which
-uses a `workspace` MCP tool). The agent loads the relevant skill, interviews the
-user, and writes `output/report.md` with `[DATA NEEDED: …]` placeholders and no
-fabricated figures. Deferred: a structured fact-check MCP, BFF auth, container
-hardening, and durable session persistence. See the roadmap in `AGENTS.md`.
+Working end-to-end in the container stack: goal dropdown (including a developer
+tool self-test goal), per-session workspace, drag-and-drop upload with **automatic
+Markdown conversion**, re-upload replacement with a unified diff sent to the agent,
+"load full file into context", **streaming chat** (token-by-token with a thinking
+animation + timer; reasoning kept out of the answer bubble), native **tool-call
+chips** (with noisy internal errors hidden), a single **% context** meter with an
+approximate breakdown, a native **todo** panel, and a left **Documents** sidebar
+grouped as Environment vs Output. Files can be downloaded/exported as original ·
+`.md` · **PDF** · **DOCX**; direct delete is only allowed before the next message,
+otherwise the model calls the `workspace_delete_file` MCP. The agent has time
+knowledge (`time_get_current_time` + 12h per-turn system refresh), a Tavily-backed
+`fact-check_verify_claim` MCP with fallback when unconfigured, markdown-rendered
+answers, timestamps, pins, dark mode, a chat-app composer, and it writes
+`output/report.md` with `[DATA NEEDED: …]` placeholders and no fabricated figures.
+Deferred: BFF auth, container hardening, durable session persistence, and full
+click-testing of stop/edit/report-preview/pin navigation. See `AGENTS.md`.

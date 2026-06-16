@@ -10,7 +10,7 @@ export default async function HomePage() {
   const goalOptions = goals.map((g) => ({ id: g.id, title: g.title }));
 
   return (
-    <main>
+    <main className="home-page">
       <h1>Reporting Agent</h1>
       <p>Select a report type to begin. The AI will interview you and draft the report.</p>
       <GoalPicker goals={goalOptions} />

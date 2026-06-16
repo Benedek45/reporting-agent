@@ -39,7 +39,17 @@ export default function GoalPicker({ goals }: GoalPickerProps) {
         throw new Error(body.error ?? `Server error ${res.status}`);
       }
 
-      const data = (await res.json()) as { sessionId: string };
+      const data = (await res.json()) as { sessionId: string; welcome?: string };
+
+      // Stash the welcome message so the chat page can show it immediately
+      if (data.welcome) {
+        try {
+          sessionStorage.setItem(`welcome:${data.sessionId}`, data.welcome);
+        } catch {
+          // sessionStorage unavailable — non-fatal
+        }
+      }
+
       router.push(`/chat/${data.sessionId}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unexpected error");

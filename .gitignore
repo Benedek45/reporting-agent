@@ -18,6 +18,7 @@ vendor/opencode/.sst/
 out/
 build/
 next-env.d.ts
+tsconfig.tsbuildinfo
 
 # Per-session agent workspaces (uploaded client docs + generated reports)
 workspaces/
