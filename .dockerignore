@@ -1,0 +1,20 @@
+# Keep the build context lean. We copy the vendored opencode SOURCE and install
+# fresh inside the Linux image, so never ship host-built node_modules.
+**/node_modules
+.next
+.git
+*.log
+
+# Secrets are injected at runtime via env_file, never baked into the image.
+.env
+.env.*
+!.env.example
+
+# Per-session workspaces are a runtime mount, not part of the image.
+workspaces
+../reporting-agent-workspaces
+
+# Host build output / caches in the vendored fork
+vendor/opencode/.turbo
+vendor/opencode/**/dist
+vendor/opencode/.sst

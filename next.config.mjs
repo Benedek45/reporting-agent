@@ -1,8 +1,8 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // BFF route handlers spawn/connect to the opencode server and touch the
-  // filesystem (workspaces). Keep server-only deps out of the client bundle.
-  serverExternalPackages: ["@opencode-ai/sdk"],
+  // The BFF talks to the opencode server over REST (global fetch) and touches
+  // the filesystem in route handlers (runtime = "nodejs"). No special config
+  // needed yet.
 };
 
 export default nextConfig;

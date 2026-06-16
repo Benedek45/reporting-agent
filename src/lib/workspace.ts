@@ -17,11 +17,52 @@ export function workspaceDir(sessionId: string): string {
   return path.join(workspacesRoot(), sessionId);
 }
 
+function mappingDir(): string {
+  return path.join(workspacesRoot(), ".sessions");
+}
+
+function mappedWorkspaceDirName(sessionId: string): string {
+  return path.basename(sessionId).replace(/[/\\]/g, "_");
+}
+
+async function writeWorkspaceMapping(
+  sessionId: string,
+  workspaceId: string
+): Promise<void> {
+  await fs.mkdir(mappingDir(), { recursive: true });
+  await fs.writeFile(
+    path.join(mappingDir(), mappedWorkspaceDirName(sessionId)),
+    workspaceId,
+    "utf8"
+  );
+}
+
+async function workspaceDirForSession(sessionId: string): Promise<string> {
+  try {
+    const workspaceId = await fs.readFile(
+      path.join(mappingDir(), mappedWorkspaceDirName(sessionId)),
+      "utf8"
+    );
+    return path.join(workspacesRoot(), mappedWorkspaceDirName(workspaceId.trim()));
+  } catch {
+    return workspaceDir(sessionId);
+  }
+}
+
 export async function ensureWorkspace(
   sessionId: string,
+  task: Task,
+  workspaceId = sessionId
+): Promise<void> {
+  await provisionWorkspace(workspaceId, task);
+  await writeWorkspaceMapping(sessionId, workspaceId);
+}
+
+export async function provisionWorkspace(
+  workspaceId: string,
   task: Task
 ): Promise<void> {
-  const ws = workspaceDir(sessionId);
+  const ws = path.join(workspacesRoot(), mappedWorkspaceDirName(workspaceId));
   const uploadsDir = path.join(ws, "uploads");
   const outputDir = path.join(ws, "output");
 
@@ -54,7 +95,7 @@ export async function saveUpload(
   // Sanitize: strip any path separators to prevent directory traversal
   const safeName = path.basename(fileName).replace(/[/\\]/g, "_");
 
-  const uploadsDir = path.join(workspaceDir(sessionId), "uploads");
+  const uploadsDir = path.join(await workspaceDirForSession(sessionId), "uploads");
   await fs.mkdir(uploadsDir, { recursive: true });
 
   const dest = path.join(uploadsDir, safeName);

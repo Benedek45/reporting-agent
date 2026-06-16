@@ -1,0 +1,47 @@
+# The full application as one block. End user runs: docker compose up
+# Then opens http://localhost:3000. opencode is an internal engine and is NOT
+# published to the host — only the `app` service is reachable.
+name: reporting-agent
+
+services:
+  opencode:
+    build:
+      context: .
+      dockerfile: docker/opencode.Dockerfile
+    image: reporting-agent-opencode:local
+    # Secrets (OPENCODE_GO_API_KEY) come from .env at runtime, never baked in.
+    env_file: .env
+    environment:
+      # Load OUR config explicitly; do not walk the tree for stray configs.
+      OPENCODE_CONFIG: /config/opencode.json
+      OPENCODE_CONFIG_DIR: /config/.opencode
+      OPENCODE_DISABLE_PROJECT_CONFIG: "true"
+    volumes:
+      - ./opencode.json:/config/opencode.json:ro
+      - ./prompts:/config/prompts:ro
+      - ./.opencode:/config/.opencode:ro
+      - ./mcp:/config/mcp:ro
+      - workspaces:/workspaces
+    expose:
+      - "4096" # internal network only — intentionally not published
+    restart: unless-stopped
+
+  app:
+    build:
+      context: .
+      dockerfile: docker/app.Dockerfile
+    image: reporting-agent-app:local
+    environment:
+      OPENCODE_SERVER_URL: http://opencode:4096
+      WORKSPACES_ROOT: /workspaces
+      NODE_ENV: production
+    ports:
+      - "3000:3000" # the only port exposed to the user
+    volumes:
+      - workspaces:/workspaces
+    depends_on:
+      - opencode
+    restart: unless-stopped
+
+volumes:
+  workspaces:

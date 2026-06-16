@@ -21,6 +21,11 @@ interface OpenCodeSession {
   [key: string]: unknown;
 }
 
+interface OpenCodeModel {
+  providerID: string;
+  modelID: string;
+}
+
 async function request<T>(
   path: string,
   init: RequestInit = {}
@@ -44,27 +49,54 @@ async function request<T>(
   return res.json() as Promise<T>;
 }
 
-export async function createSession(title: string): Promise<{ id: string }> {
-  const session = await request<OpenCodeSession>("/session", {
-    method: "POST",
-    body: JSON.stringify({ title }),
-  });
+function withDirectory(path: string, directory?: string): string {
+  if (!directory) {
+    return path;
+  }
+
+  const params = new URLSearchParams({ directory });
+  return `${path}?${params.toString()}`;
+}
+
+function modelFromId(model: string): OpenCodeModel {
+  const separator = model.indexOf("/");
+  if (separator === -1) {
+    return { providerID: "", modelID: model };
+  }
+
+  return {
+    providerID: model.slice(0, separator),
+    modelID: model.slice(separator + 1),
+  };
+}
+
+export async function createSession(
+  title: string,
+  directory?: string
+): Promise<{ id: string }> {
+  const session = await request<OpenCodeSession>(
+    withDirectory("/session", directory),
+    {
+      method: "POST",
+      body: JSON.stringify({ title }),
+    }
+  );
   return { id: session.id };
 }
 
 export async function sendMessage(
   sessionId: string,
   text: string,
-  opts?: { agent?: string; model?: string }
+  opts?: { agent?: string; model?: string; directory?: string }
 ): Promise<{ text: string }> {
   const body = {
-    model: opts?.model ?? DEFAULT_MODEL,
+    model: modelFromId(opts?.model ?? DEFAULT_MODEL),
     agent: opts?.agent ?? DEFAULT_AGENT,
     parts: [{ type: "text", text }],
   };
 
   const response = await request<OpenCodeMessageResponse>(
-    `/session/${sessionId}/message`,
+    withDirectory(`/session/${sessionId}/message`, opts?.directory),
     {
       method: "POST",
       body: JSON.stringify(body),

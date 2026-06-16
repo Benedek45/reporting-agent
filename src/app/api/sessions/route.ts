@@ -1,9 +1,11 @@
 export const runtime = "nodejs";
 
+import { randomUUID } from "node:crypto";
+import path from "node:path";
 import { NextRequest } from "next/server";
 import { getTask } from "@/lib/tasks";
 import { createSession } from "@/lib/opencode";
-import { ensureWorkspace } from "@/lib/workspace";
+import { ensureWorkspace, provisionWorkspace } from "@/lib/workspace";
 
 export async function POST(req: NextRequest): Promise<Response> {
   try {
@@ -22,15 +24,23 @@ export async function POST(req: NextRequest): Promise<Response> {
       );
     }
 
-    const { id: sessionId } = await createSession(`${task.label} report`);
+    const workspaceId = randomUUID();
+    const directory = path.posix.join(
+      process.env.WORKSPACES_ROOT ?? "/workspaces",
+      workspaceId
+    );
 
-    await ensureWorkspace(sessionId, task);
+    await provisionWorkspace(workspaceId, task);
 
-    // TODO(scaffold): persist the session<->workspace association (e.g. in a
-    // lightweight SQLite or JSON store) so that subsequent requests can look up
-    // the workspace by sessionId without relying on the filesystem naming
-    // convention alone. Currently the workspace directory IS named by sessionId,
-    // which is sufficient for the scaffold but fragile if session IDs change.
+    const { id: sessionId } = await createSession(
+      `${task.label} report`,
+      directory
+    );
+
+    await ensureWorkspace(sessionId, task, workspaceId);
+
+    // TODO(scaffold): replace the file-backed workspace mapping with durable
+    // session persistence once the BFF has a database.
 
     return Response.json({ sessionId });
   } catch (err) {
