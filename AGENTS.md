@@ -48,6 +48,15 @@ Browser ──HTTP──► Next.js app (UI + BFF)  ──REST──►  opencod
 
 ## 3. Repository layout
 
+> **On-disk location:** the repo root is `D:\AGI_gent\gold\gold` (nested one
+> level under `D:\AGI_gent\gold`). It was deliberately moved down one level
+> because the opencode instance used for development runs from
+> `D:\AGI_gent\gold`. Keeping our project — which has its *own* `opencode.json`
+> and `AGENTS.md` — at that same path collided with the dev opencode's config /
+> instruction discovery (it walks the directory tree and picked up our files).
+> Nesting the project in its own subdirectory isolates the two. All commands
+> below assume the repo root `D:\AGI_gent\gold\gold` as the working directory.
+
 ```
 opencode.json              opencode runtime config (model, agents, skills, MCP, permissions)
 .env / .env.example        secrets + runtime config (.env is gitignored)
@@ -147,7 +156,10 @@ Base URL = `OPENCODE_SERVER_URL` (default `http://127.0.0.1:4096`).
 ## 8. Per-session workspace isolation
 
 - Each session gets a workspace under `WORKSPACES_ROOT` (env; default
-  `../reporting-agent-workspaces`, **outside** this repo).
+  `../reporting-agent-workspaces`, **outside** this repo). With the repo root at
+  `D:\AGI_gent\gold\gold`, that default resolves to
+  `D:\AGI_gent\gold\reporting-agent-workspaces` — a sibling of the repo, still
+  outside it.
 - It is outside the repo on purpose: opencode auto-loads any `AGENTS.md` it finds
   by walking up from the cwd. If the workspace were inside this repo, *this*
   dev-facing AGENTS.md would leak into the agent's runtime context. Keep
