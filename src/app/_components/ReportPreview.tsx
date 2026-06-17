@@ -19,7 +19,7 @@ export default function ReportPreview({ sessionId, markdown, onRefresh }: Report
   const [open, setOpen] = useState(false);
 
   function handleDownload(format: string) {
-    const url = `/api/download?sessionId=${encodeURIComponent(sessionId)}&name=output%2Freport.md&format=${encodeURIComponent(format)}`;
+    const url = `/api/download?sessionId=${encodeURIComponent(sessionId)}&name=report.md&format=${encodeURIComponent(format)}`;
     window.open(url, "_blank", "noopener,noreferrer");
   }
 

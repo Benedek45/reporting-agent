@@ -16,7 +16,7 @@ import Thinking from "@/app/_components/Thinking";
 import ContextMeter from "@/app/_components/ContextMeter";
 import TodoPanel from "@/app/_components/TodoPanel";
 import MarkdownMessage from "@/app/_components/MarkdownMessage";
-import ToolCallChip from "@/app/_components/ToolCallChip";
+import ToolActivity from "@/app/_components/ToolActivity";
 import ThemeToggle from "@/app/_components/ThemeToggle";
 import ReportPreview from "@/app/_components/ReportPreview";
 
@@ -618,13 +618,9 @@ export default function ChatPage() {
                 else msgRefs.current.delete(msg.id);
               }}
             >
-              {/* Tool chips (assistant only, before the text) */}
+              {/* Tool activity (assistant only, before the text) */}
               {msg.role === "assistant" && msg.tools.length > 0 && (
-                <div className="tool-calls">
-                  {msg.tools.map((t) => (
-                    <ToolCallChip key={t.id} tool={t} />
-                  ))}
-                </div>
+                <ToolActivity tools={msg.tools} />
               )}
 
               <div className={`msg ${msg.role}`}>
@@ -669,11 +665,7 @@ export default function ChatPage() {
           {streamingText !== null && (
             <div className="msg-wrapper assistant">
               {streamingTools.length > 0 && (
-                <div className="tool-calls">
-                  {streamingTools.map((t) => (
-                    <ToolCallChip key={t.id} tool={t} />
-                  ))}
-                </div>
+                <ToolActivity tools={streamingTools} />
               )}
               <div className="msg assistant msg-streaming">
                 {streamingText ? (

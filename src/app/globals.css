@@ -821,6 +821,76 @@ p {
   opacity: 0.75;
 }
 
+/* ── Tool activity + details ─────────────────────────────────────────────────── */
+
+.tool-activity {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  margin-bottom: 0.35rem;
+  max-width: min(100%, 720px);
+}
+
+.tool-activity-summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  align-self: flex-start;
+  max-width: 100%;
+  padding: 0.4rem 0.7rem;
+  border: none;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--color-text-muted);
+  font: inherit;
+  font-size: 0.88rem;
+  cursor: pointer;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+
+.tool-activity-summary:hover {
+  background: var(--color-surface-2);
+  color: var(--color-text);
+}
+
+.tool-activity-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  flex-shrink: 0;
+}
+
+.tool-activity-dot.completed {
+  background: var(--color-success);
+}
+
+.tool-activity-dot.running {
+  background: var(--color-warning);
+  animation: thinking-pulse 1s ease-in-out infinite;
+}
+
+.tool-activity-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tool-activity-status,
+.tool-activity-toggle {
+  font-size: 0.78rem;
+  color: var(--color-text-muted);
+  flex-shrink: 0;
+}
+
+.tool-activity-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding-left: 1rem;
+  border-left: 1px solid var(--color-border);
+  margin-left: 0.75rem;
+}
+
 /* ── Tool call chips ─────────────────────────────────────────────────────────── */
 
 .tool-calls {

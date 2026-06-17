@@ -97,7 +97,8 @@ to the Thinking box).
 Also verified (2026-06, UI/feature pass 2 — Playwright + API): the **`time` MCP**
 (`time_get_current_time`) and **`fact-check` MCP** (`fact-check_verify_claim`,
 Tavily-backed; returns `NEEDS_CONFIG` without `FACTCHECK_API_KEY`, and the agent
-then falls back to web-fetch) both stream as **tool-call chips** in the chat;
+then falls back to web-fetch) stream into **one expandable tool activity line**
+per assistant turn (Anthropic-style; expand to inspect individual tool calls);
 **assistant markdown is rendered** (react-markdown + remark-gfm — bold/tables);
 the **single context bar shows an approximate breakdown** (System & tools / Documents /
 Reasoning / Conversation); **dark mode** toggles + persists (`data-theme`);
@@ -167,7 +168,7 @@ mcp/
 src/
   app/
     page.tsx               goal dropdown (server) + _components/GoalPicker.tsx (client)
-    chat/[sessionId]/page.tsx   chat UI: streaming + tool chips + docs sidebar + todos + %context
+    chat/[sessionId]/page.tsx   chat UI: streaming + tool activity + docs sidebar + todos + %context
     api/sessions/route.ts  POST: create session + provision workspace + goal.md
     api/chat/route.ts      POST: non-stream relay (used by load-to-context)
     api/chat/stream/route.ts       POST: SSE stream a turn (text/reasoning/tool/todos/usage)
@@ -181,7 +182,7 @@ src/
     api/files/ask-delete/route.ts  POST: ask the model to delete (workspace MCP)
     api/report/route.ts     GET: report.md markdown for preview
     api/download/route.ts  GET: download a file as original/.md/.pdf/.docx
-    _components/           GoalPicker, DocumentsSidebar, FileMenu, Thinking, ContextMeter, TodoPanel, MarkdownMessage, ToolCallChip, ReportPreview, ThemeToggle
+    _components/           GoalPicker, DocumentsSidebar, FileMenu, Thinking, ContextMeter, TodoPanel, MarkdownMessage, ToolActivity, ToolCallChip, ReportPreview, ThemeToggle
     layout.tsx, globals.css
   lib/
     goals.ts               load goals/*.md (frontmatter + body)
@@ -335,10 +336,11 @@ and picking up stray configs — the original collision cause).
   - `doc-ingest` is **superseded** by the `converter` service; safe to delete.
 - **Reasoning and tool-call split.** opencode emits reasoning as `reasoning` parts
   and tools as `tool` parts; `/api/chat/stream` routes reasoning to the Thinking box
-  and tools to compact tool-call chips. Tool chips with `status:"error"` are hidden
-  in the consumer UI to avoid exposing internal permission/path errors to business
-  users. The prompt explicitly forbids visible setup narration; a Hungarian smoke
-  test confirmed the first visible answer skips "loading skill/template" chatter.
+  and tools to a single compact, expandable tool activity line per assistant turn
+  (expand to inspect individual tool calls). Tool calls with `status:"error"` are
+  hidden in the consumer UI to avoid exposing internal permission/path errors to
+  business users. The prompt explicitly forbids visible setup narration; a Hungarian
+  smoke test confirmed the first visible answer skips "loading skill/template" chatter.
 - **`converter` does both directions:** `POST /convert` (file→Markdown, MarkItDown)
   and `POST /render` (`{markdown,format:"pdf"|"docx"}`→binary, via `markdown`+
   `weasyprint` (BSD) and `htmldocx`+`python-docx` (MIT) — all business-friendly).
