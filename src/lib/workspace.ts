@@ -882,6 +882,19 @@ export async function deleteSession(sessionId: string): Promise<void> {
   } catch {
     // Missing workspace dir is fine
   }
+
+  // Remove context-manager sidecar state stored by the opencode plugin. It lives
+  // outside the per-session workspace so it must be cleaned up separately.
+  try {
+    await fs.rm(contextManagerStatePath(sessionId), { force: true });
+  } catch {
+    // Missing sidecar is fine
+  }
+}
+
+function contextManagerStatePath(sessionId: string): string {
+  const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 128);
+  return path.join(workspacesRoot(), ".context-manager", "dcp", `${safe}.json`);
 }
 
 // ── Presented deliverables ────────────────────────────────────────────────────

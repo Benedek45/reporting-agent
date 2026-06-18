@@ -691,6 +691,24 @@ type-clean (zero errors in any edited file):
   on demand, not fully into context).** `api/upload` returns per-file `{bytes,
   tooLargeForFullContext}` (threshold = the existing context cap); the Documents sidebar
   shows a non-blocking "Large file — on-demand only" chip instead of blocking the upload.
+- **Clean-room context manager wired into opencode (gap-6 implementation).** The MIT
+  clean-room context-management plugin was developed in a separate private repo
+  (`Benedek45/context-manager`; local ignored source at `dcp-rewrite/`) and bundled into
+  this app as `.opencode/plugins/context-manager.js` (single-file Bun ESM bundle; no AGPL
+  reference source committed). It auto-loads through opencode's `.opencode/plugins`
+  discovery and registers a model-driven `compress` tool plus mechanical context pruning
+  hooks (`experimental.chat.messages.transform`, `experimental.chat.system.transform`,
+  `experimental.text.complete`, events, and `/dcp-compress`). The plugin uses a pure-core
+  + adapter architecture: cache-aware Cost-ROI gating, deterministic placeholders,
+  observation mask/offload for old tool outputs, stale-error/dedup cleanup, and structured
+  append-only summaries. For this app, `compress` is non-interactive (no `context.ask`) so
+  it cannot deadlock the BFF stream; it mutates only context-manager sidecar state and the
+  outgoing-message projection, not workspace files. State is stored under
+  `/workspaces/.context-manager/dcp/<sessionId>.json` so it shares lifecycle with the
+  workspace volume; `deleteSession` removes that sidecar. Verified live: opencode tool list
+  contains `compress`; a streamed turn returned 0 error frames; the sidecar was created in
+  `/workspaces/.context-manager/dcp/` and deleted with the session. The existing
+  `report-compaction.js` remains enabled as the final native-compaction safety net.
 
 **SECURITY FLAG — BFF auth (audit C-1):** every `/api/*` route is currently
 **unauthenticated**. This is a KNOWN, ACCEPTED gap **while the app is in development**
@@ -701,17 +719,6 @@ safe to expose until this is done.
 
 **Deferred** (not yet built):
 
-- **gap-6 — MIT observation-masking / structured-eviction context layer.** Build a
-  context-management layer (hide/evict stale tool outputs before summarization, budget-
-  aware) in front of the existing `report-compaction.js`, implemented MIT-clean **from
-  the public papers** (JetBrains hybrid masking+summary; CWL structured eviction). If the
-  DCP behavior is referenced, do it via an **agentic clean-room**: Agent A writes a
-  BLACK-BOX BEHAVIORAL SPEC (observed I/O + the algorithm in the abstract only — never a
-  transcription of the AGPL source's structure/expression), Agent B implements from that
-  spec. Protection comes from the information barrier + a spec containing only
-  unprotectable ideas; the legal test is substantial similarity of the OUTPUT, not the
-  number of agent hops. (Verified template: ghuntley + ruvnet/open-claude-code rebuilt
-  Claude Code this way, citing DMCA §1201(f) / EU Software Directive Art.6 / UK CDPA §50B.)
 - BFF auth (see SECURITY FLAG above) — promote to a pre-deployment blocker.
 - Remove the superseded `doc-ingest` / `doc-generate` stubs.
 - Re-enable the structured interactive `question` tool if desired (now possible
