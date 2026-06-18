@@ -675,9 +675,12 @@ type-clean (zero errors in any edited file):
   `edit: allow` only on `compliance`; disabled `doc-*` stubs switched `node`→`bun`.
   `goal_test.md` gains `dev: true` frontmatter and is filtered out of the production
   dropdown unless `SHOW_DEV_GOALS=1`. **Infra hardening:** both Dockerfiles run non-root
-  (`USER bun` / `USER node` with `chown` of `/workspaces` — FLAG: volume write-ownership
-  across the two users must be verified on first real Docker build; a shared GID or init
-  `chmod` may be needed); `docker-compose.yml` replaced `env_file: .env` on `opencode`
+  (`USER bun` / `USER node`, both uid 1000); RESOLVED 2026-06: the shared `workspaces`
+  named volume is created root-owned by Docker, so a one-shot root `init-workspaces`
+  busybox service `chown -R 1000:1000 /workspaces` runs (via `depends_on:
+  condition: service_completed_successfully`) before app/opencode start — verified on a
+  real Docker build (session create/write/delete all work as uid 1000; both users share
+  uid 1000 so cross-container writes are consistent); `docker-compose.yml` replaced `env_file: .env` on `opencode`
   with explicit `OPENCODE_GO_API_KEY` + `FACTCHECK_API_KEY` interpolation (no bulk secret
   import); `converter/app.py` enforces a `MAX_UPLOAD_BYTES` cap (413) and an SSRF-safe
   `url_fetcher` that blocks all non-`data:` URLs in WeasyPrint; `start.ps1`/`stop.ps1`
@@ -713,8 +716,8 @@ safe to expose until this is done.
 - Remove the superseded `doc-ingest` / `doc-generate` stubs.
 - Re-enable the structured interactive `question` tool if desired (now possible
   over SSE, but currently plain-text Q&A is more consumer-friendly).
-- Verify the non-root container volume ownership on a real Docker build (see FLAG above);
-  restricted egress network + resource limits still outstanding.
+- Non-root container volume ownership: RESOLVED via the `init-workspaces` chown service
+  (see the audit changelog). Restricted egress network + resource limits still outstanding.
 - A cheaper `small_model` for title generation if the `opencode-go` provider offers one
   (left as `deepseek-v4-flash`; pricing unverified — do not invent a model id).
 - Durable session↔workspace persistence (the `.sessions` map is now JSON

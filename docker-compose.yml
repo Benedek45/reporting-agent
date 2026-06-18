@@ -4,6 +4,17 @@
 name: reporting-agent
 
 services:
+  # One-shot root init: the `workspaces` named volume is created root-owned by
+  # Docker, but app (node) and opencode (bun) both run as uid 1000 and must
+  # mkdir/write session dirs under /workspaces. This chowns the volume to 1000
+  # before those services start. Runs to completion then exits.
+  init-workspaces:
+    image: busybox:1.37
+    command: ["sh", "-c", "chown -R 1000:1000 /workspaces && chmod 0775 /workspaces"]
+    volumes:
+      - workspaces:/workspaces
+    restart: "no"
+
   converter:
     build:
       context: .
@@ -37,6 +48,9 @@ services:
       - workspaces:/workspaces
     expose:
       - "4096" # internal network only — intentionally not published
+    depends_on:
+      init-workspaces:
+        condition: service_completed_successfully
     restart: unless-stopped
 
   app:
@@ -54,8 +68,12 @@ services:
     volumes:
       - workspaces:/workspaces
     depends_on:
-      - opencode
-      - converter
+      init-workspaces:
+        condition: service_completed_successfully
+      opencode:
+        condition: service_started
+      converter:
+        condition: service_started
     restart: unless-stopped
 
 volumes:
