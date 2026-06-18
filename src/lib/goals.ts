@@ -57,13 +57,46 @@ function goalFromFile(
   const agent = meta["agent"];
   const skill = meta["skill"];
   const templatePath = meta["template"]; // frontmatter key is `template`
+  const roadmapPath = meta["roadmap"]; // optional
+  // `dev: true` marks a goal as developer-only (excluded from the dropdown
+  // unless SHOW_DEV_GOALS=1). Accepts "true" (string from YAML frontmatter).
+  const dev = meta["dev"] === "true";
 
   if (!id || !title || !agent || !skill || !templatePath) {
     console.warn(`[goals] Skipping ${fileName}: missing required frontmatter field`);
     return null;
   }
 
-  return { id, title, agent, skill, templatePath, body };
+  return {
+    id,
+    title,
+    agent,
+    skill,
+    templatePath,
+    ...(roadmapPath ? { roadmapPath } : {}),
+    ...(dev ? { dev: true } : {}),
+    body,
+  };
+}
+
+/**
+ * Reads the roadmap markdown body for a goal (from its `roadmap` frontmatter
+ * path, resolved against the repo root). Returns "" if the goal has no roadmap
+ * or the file is unreadable.
+ */
+export async function readGoalRoadmap(goal: Goal): Promise<string> {
+  if (!goal.roadmapPath) return "";
+  try {
+    return await fs.readFile(
+      path.resolve(process.cwd(), goal.roadmapPath),
+      "utf8"
+    );
+  } catch (err) {
+    console.warn(
+      `[goals] Could not read roadmap for ${goal.id} at ${goal.roadmapPath}: ${String(err)}`
+    );
+    return "";
+  }
 }
 
 export async function getGoals(): Promise<Goal[]> {
@@ -74,13 +107,18 @@ export async function getGoals(): Promise<Goal[]> {
     return [];
   }
 
+  const showDev = process.env.SHOW_DEV_GOALS === "1";
+
   const goals: Goal[] = [];
   for (const entry of entries) {
     if (!entry.endsWith(".md")) continue;
     try {
       const content = await fs.readFile(path.join(GOALS_DIR, entry), "utf8");
       const goal = goalFromFile(content, entry);
-      if (goal) goals.push(goal);
+      if (!goal) continue;
+      // Exclude developer-only goals from the dropdown unless SHOW_DEV_GOALS=1.
+      if (goal.dev && !showDev) continue;
+      goals.push(goal);
     } catch (err) {
       console.warn(`[goals] Could not read ${entry}: ${String(err)}`);
     }

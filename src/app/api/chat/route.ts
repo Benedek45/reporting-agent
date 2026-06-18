@@ -8,6 +8,13 @@ export const runtime = "nodejs";
 import { NextRequest } from "next/server";
 import { sendMessage } from "@/lib/opencode";
 
+// Minimal workspace guidance injected on the legacy non-streaming path so the
+// agent is aware of the merged folder layout and deliverable conventions.
+const WORKSPACE_GUIDANCE =
+  "All files (uploads and the report) live in one folder. " +
+  "Continue writing the report to `output/report.md`. " +
+  "If you produce any other deliverable, call `present_file` with its absolute path.";
+
 export async function POST(req: NextRequest): Promise<Response> {
   try {
     const body = (await req.json()) as {
@@ -24,7 +31,9 @@ export async function POST(req: NextRequest): Promise<Response> {
       );
     }
 
-    const { text: reply } = await sendMessage(sessionId, text);
+    const { text: reply } = await sendMessage(sessionId, text, {
+      system: WORKSPACE_GUIDANCE,
+    });
 
     return Response.json({ reply });
   } catch (err) {

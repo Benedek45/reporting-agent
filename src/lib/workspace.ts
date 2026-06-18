@@ -2,15 +2,58 @@
 
 import fs from "node:fs/promises";
 import path from "node:path";
-import type { Goal, SessionState, UploadInfo, EnvFile, DownloadFormat } from "@/types";
+import type {
+  Goal,
+  SessionState,
+  UploadInfo,
+  EnvFile,
+  DownloadFormat,
+  RoadmapState,
+  RoadmapSection,
+} from "@/types";
 
 const REPO_ROOT = process.cwd();
 
+// The single per-session folder that holds BOTH user uploads and the agent's
+// output (the report). Uploaded files and `report.md` live side by side here.
+// (Previously uploads lived in `uploads/` and the report in `output/`; these
+// were merged so the user sees one folder.)
+const FILES_SUBDIR = "output";
+
+// Files inside FILES_SUBDIR that are NOT user documents and must be hidden from
+// upload/file listings. `report.md` is surfaced separately as kind "report".
+const SYSTEM_FILES = new Set([
+  "report-template.md",
+  ".presented",
+]);
+
+/** Name of the per-chat local memory file (the user's editable AGENTS.md,
+ * like Claude.md — the model's long-term memory that survives compaction).
+ * All-caps to match the opencode/AGENTS.md convention. */
+export const AGENTS_FILE_NAME = "AGENTS.md";
+
 function workspacesRoot(): string {
+  if (!process.env.WORKSPACES_ROOT) {
+    console.warn(
+      "[workspace] WORKSPACES_ROOT is not set — falling back to " +
+        "'../reporting-agent-workspaces'. Set WORKSPACES_ROOT to the path the " +
+        "opencode engine sees (e.g. /workspaces in Docker) to avoid misrouting."
+    );
+  }
   return path.resolve(
     REPO_ROOT,
     process.env.WORKSPACES_ROOT ?? "../reporting-agent-workspaces"
   );
+}
+
+/**
+ * Shared basename safety check. Returns true iff `name` is a safe file
+ * basename: no path separators, not empty, not `.` or `..`.
+ * Use this at route layer before embedding `name` in prompts or file paths.
+ */
+export function isSafeName(name: string): boolean {
+  const base = path.basename(name);
+  return base === name && base !== "" && base !== "." && base !== "..";
 }
 
 export function workspaceDir(sessionId: string): string {
@@ -44,46 +87,131 @@ function mappedWorkspaceDirName(sessionId: string): string {
  */
 export async function readSessionState(sessionId: string): Promise<SessionState> {
   const filePath = path.join(mappingDir(), mappedWorkspaceDirName(sessionId));
-  let raw: string;
-  try {
-    raw = await fs.readFile(filePath, "utf8");
-  } catch {
-    throw new Error(`Session state not found for sessionId: ${sessionId}`);
+
+  // A concurrent writer may briefly leave the file torn on some platforms.
+  // Writes are atomic (temp + rename) so this should not happen, but we retry
+  // once on a parse failure as cheap insurance against a transient bad read.
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    let raw: string;
+    try {
+      raw = await fs.readFile(filePath, "utf8");
+    } catch {
+      throw new Error(`Session state not found for sessionId: ${sessionId}`);
+    }
+
+    const trimmed = raw.trim();
+
+    // Detect legacy bare-UUID format (no braces)
+    if (!trimmed.startsWith("{")) {
+      return { workspaceId: trimmed, messageCount: 0, uploads: {} };
+    }
+
+    try {
+      return JSON.parse(trimmed) as SessionState;
+    } catch (err) {
+      lastErr = err;
+      // brief pause, then re-read once
+      await new Promise((r) => setTimeout(r, 15));
+    }
   }
-
-  const trimmed = raw.trim();
-
-  // Detect legacy bare-UUID format (no braces)
-  if (!trimmed.startsWith("{")) {
-    return { workspaceId: trimmed, messageCount: 0, uploads: {} };
-  }
-
-  return JSON.parse(trimmed) as SessionState;
+  throw new Error(
+    `Corrupt session state for ${sessionId}: ${
+      lastErr instanceof Error ? lastErr.message : String(lastErr)
+    }`
+  );
 }
 
 /**
- * Writes the session state to the mapping file.
+ * Writes data to `target` atomically: writes to a unique sibling temp file
+ * then renames over the target. rename(2) is atomic on a single filesystem,
+ * so concurrent readers always observe a complete file.
+ */
+async function atomicWriteFile(
+  target: string,
+  data: string | Uint8Array,
+  encoding?: BufferEncoding
+): Promise<void> {
+  const { randomUUID } = await import("node:crypto");
+  const tmp = `${target}.${process.pid}.${randomUUID()}.tmp`;
+  if (typeof data === "string") {
+    await fs.writeFile(tmp, data, encoding ?? "utf8");
+  } else {
+    await fs.writeFile(tmp, data);
+  }
+  try {
+    await fs.rename(tmp, target);
+  } catch (err) {
+    await fs.unlink(tmp).catch(() => {});
+    throw err;
+  }
+}
+
+/**
+ * Writes the session state to the mapping file ATOMICALLY (write to a unique
+ * temp file, then rename over the target). rename(2) is atomic on a single
+ * filesystem, so concurrent readers always observe a complete file — never a
+ * torn "valid JSON + leftover tail" that would crash JSON.parse.
  */
 export async function writeSessionState(
   sessionId: string,
   state: SessionState
 ): Promise<void> {
-  await fs.mkdir(mappingDir(), { recursive: true });
-  await fs.writeFile(
-    path.join(mappingDir(), mappedWorkspaceDirName(sessionId)),
-    JSON.stringify(state),
-    "utf8"
-  );
+  const dir = mappingDir();
+  await fs.mkdir(dir, { recursive: true });
+  const target = path.join(dir, mappedWorkspaceDirName(sessionId));
+  await atomicWriteFile(target, JSON.stringify(state), "utf8");
+}
+
+// ── Per-session state mutation lock ─────────────────────────────────────────
+//
+// All read-modify-write cycles on the session-state JSON run in this single
+// Node process. Several of them fire concurrently (notably the fire-and-forget
+// `recordReadDocBytes` calls during a turn where the agent reads many files).
+// Without serialization, concurrent cycles lose updates and — combined with
+// non-atomic writes — could produce torn reads. We chain mutations per session
+// through a promise so each read-modify-write is applied atomically end-to-end.
+// Pruned after each settled mutation to prevent unbounded growth in long-lived
+// processes (e.g. many sessions created and deleted over the app's lifetime).
+const _stateLocks = new Map<string, Promise<unknown>>();
+
+/**
+ * Runs `mutator` under the per-session state lock: reads the latest state,
+ * lets the mutator change it (optionally returning a value), writes it back
+ * atomically, and returns the mutator's value. Serialized per sessionId.
+ */
+export async function updateSessionState<T>(
+  sessionId: string,
+  mutator: (state: SessionState) => T | Promise<T>
+): Promise<T> {
+  const prev = _stateLocks.get(sessionId) ?? Promise.resolve();
+  const run = prev.then(async () => {
+    const state = await readSessionState(sessionId);
+    const result = await mutator(state);
+    await writeSessionState(sessionId, state);
+    return result;
+  });
+  // Keep the chain alive even if this link rejects (so later mutations still run).
+  const settled = run.catch(() => {});
+  _stateLocks.set(sessionId, settled);
+  // Prune the entry once settled so the map doesn't grow unboundedly over the
+  // process lifetime (many sessions created and deleted).
+  void settled.then(() => {
+    if (_stateLocks.get(sessionId) === settled) {
+      _stateLocks.delete(sessionId);
+    }
+  });
+  return run;
 }
 
 /**
  * Atomically increments the message count for a session and returns the new count.
  */
 export async function incrementMessageCount(sessionId: string): Promise<number> {
-  const state = await readSessionState(sessionId);
-  state.messageCount += 1;
-  await writeSessionState(sessionId, state);
-  return state.messageCount;
+  return updateSessionState(sessionId, (state) => {
+    state.messageCount += 1;
+    return state.messageCount;
+  });
 }
 
 /**
@@ -93,10 +221,10 @@ export async function recordUpload(
   sessionId: string,
   fileName: string
 ): Promise<void> {
-  const state = await readSessionState(sessionId);
   const safeName = path.basename(fileName).replace(/[/\\]/g, "_");
-  state.uploads[safeName] = state.messageCount;
-  await writeSessionState(sessionId, state);
+  await updateSessionState(sessionId, (state) => {
+    state.uploads[safeName] = state.messageCount;
+  });
 }
 
 /**
@@ -121,10 +249,16 @@ export async function deleteUpload(
   sessionId: string,
   fileName: string
 ): Promise<void> {
-  const state = await readSessionState(sessionId);
   const safeName = path.basename(fileName).replace(/[/\\]/g, "_");
   const wsDir = await workspaceDirForSession(sessionId);
-  const uploadsDir = path.join(wsDir, "uploads");
+  const uploadsDir = path.join(wsDir, FILES_SUBDIR);
+
+  // Update state FIRST so canDeleteDirectly never returns true for a file that
+  // is already gone (a crash between file deletion and state update would leave
+  // a stale entry that could confuse the UI).
+  await updateSessionState(sessionId, (state) => {
+    delete state.uploads[safeName];
+  });
 
   // Remove the source file
   try {
@@ -139,10 +273,6 @@ export async function deleteUpload(
   } catch {
     // Ignore if no sidecar
   }
-
-  // Remove from uploads map
-  delete state.uploads[safeName];
-  await writeSessionState(sessionId, state);
 }
 
 /**
@@ -153,26 +283,29 @@ export async function deleteUpload(
  */
 export async function listEnvFiles(sessionId: string): Promise<EnvFile[]> {
   const wsDir = await workspaceDirForSession(sessionId);
-  const uploadsDir = path.join(wsDir, "uploads");
+  const filesDir = path.join(wsDir, FILES_SUBDIR);
   const state = await readSessionState(sessionId).catch(() => ({
     workspaceId: sessionId,
     messageCount: 0,
     uploads: {} as Record<string, number>,
   }));
 
+  const presented = await readPresented(sessionId);
+
   const results: EnvFile[] = [];
 
-  // Uploads
   let entries: string[] = [];
   try {
-    entries = await fs.readdir(uploadsDir);
+    entries = await fs.readdir(filesDir);
   } catch {
-    // No uploads dir yet
+    // No folder yet
   }
 
   const entrySet = new Set(entries);
 
   for (const entry of entries) {
+    // The report is surfaced explicitly below; system files are hidden.
+    if (entry === "report.md" || SYSTEM_FILES.has(entry)) continue;
     // Skip .md sidecars whose base file also exists
     if (entry.endsWith(".md")) {
       const base = entry.slice(0, -3);
@@ -180,27 +313,36 @@ export async function listEnvFiles(sessionId: string): Promise<EnvFile[]> {
     }
 
     try {
-      const stat = await fs.stat(path.join(uploadsDir, entry));
+      const stat = await fs.stat(path.join(filesDir, entry));
       if (!stat.isFile()) continue;
 
+      const ext = path.extname(entry).toLowerCase();
+      const isPresented = presented.has(entry);
       const uploadedAt = state.uploads[entry];
-      const isDirect = uploadedAt !== undefined && uploadedAt === state.messageCount;
+      const isDirect =
+        !isPresented &&
+        uploadedAt !== undefined &&
+        uploadedAt === state.messageCount;
+      const formats: DownloadFormat[] =
+        ext === ".md"
+          ? (["md", "pdf", "docx"] as DownloadFormat[])
+          : (["original", "md", "pdf", "docx"] as DownloadFormat[]);
 
       results.push({
         name: entry,
-        kind: "upload",
+        kind: isPresented ? "presented" : "upload",
         size: stat.size,
-        ext: path.extname(entry).toLowerCase(),
+        ext,
         canDeleteDirectly: isDirect,
-        downloadFormats: ["original", "md", "pdf", "docx"] as DownloadFormat[],
+        downloadFormats: formats,
       });
     } catch {
       // Skip unreadable entries
     }
   }
 
-  // output/report.md — kind "report"
-  const reportPath = path.join(wsDir, "output", "report.md");
+  // report.md — the primary deliverable, always grouped as a presented output.
+  const reportPath = path.join(filesDir, "report.md");
   try {
     const stat = await fs.stat(reportPath);
     if (stat.isFile()) {
@@ -217,7 +359,29 @@ export async function listEnvFiles(sessionId: string): Promise<EnvFile[]> {
     // Not present yet
   }
 
-  // goal.md is intentionally excluded from the listing per spec.
+  // agents.md — the per-chat local memory file (lives at the workspace root,
+  // like Claude.md). Listed in the Uploaded group so the user can open/edit
+  // it from the sidebar. Never deletable (it's the model's long-term memory).
+  // Only surfaced when it has content (skip the empty stub).
+  const agentsPath = path.join(wsDir, AGENTS_FILE_NAME);
+  try {
+    const stat = await fs.stat(agentsPath);
+    if (stat.isFile() && stat.size > 0) {
+      results.push({
+        name: AGENTS_FILE_NAME,
+        kind: "upload",
+        size: stat.size,
+        ext: ".md",
+        canDeleteDirectly: false,
+        downloadFormats: ["md", "pdf", "docx"] as DownloadFormat[],
+      });
+    }
+  } catch {
+    // Not present yet
+  }
+
+  // goal.md / roadmap.md live at the workspace root and are intentionally
+  // excluded from this listing.
 
   return results;
 }
@@ -265,10 +429,9 @@ export async function provisionWorkspace(
   goal: Goal
 ): Promise<void> {
   const ws = path.join(workspacesRoot(), mappedWorkspaceDirName(workspaceId));
-  const uploadsDir = path.join(ws, "uploads");
-  const outputDir = path.join(ws, "output");
+  const outputDir = path.join(ws, FILES_SUBDIR);
 
-  await fs.mkdir(uploadsDir, { recursive: true });
+  // Single merged folder for uploads + output.
   await fs.mkdir(outputDir, { recursive: true });
 
   const templateSrc = path.resolve(REPO_ROOT, goal.templatePath);
@@ -297,11 +460,11 @@ export async function saveUpload(
   // Sanitize: strip any path separators to prevent directory traversal
   const safeName = path.basename(fileName).replace(/[/\\]/g, "_");
 
-  const uploadsDir = path.join(await workspaceDirForSession(sessionId), "uploads");
+  const uploadsDir = path.join(await workspaceDirForSession(sessionId), FILES_SUBDIR);
   await fs.mkdir(uploadsDir, { recursive: true });
 
   const dest = path.join(uploadsDir, safeName);
-  await fs.writeFile(dest, data);
+  await atomicWriteFile(dest, data);
 
   return { name: safeName, size: data.byteLength };
 }
@@ -317,11 +480,11 @@ export async function writeUploadMarkdown(
   markdown: string
 ): Promise<string> {
   const safeName = path.basename(sourceFileName).replace(/[/\\]/g, "_");
-  const uploadsDir = path.join(await workspaceDirForSession(sessionId), "uploads");
+  const uploadsDir = path.join(await workspaceDirForSession(sessionId), FILES_SUBDIR);
   await fs.mkdir(uploadsDir, { recursive: true });
   const dest = path.join(uploadsDir, `${safeName}.md`);
   await fs.writeFile(dest, markdown, "utf8");
-  return path.join("uploads", `${safeName}.md`);
+  return path.join(FILES_SUBDIR, `${safeName}.md`);
 }
 
 /**
@@ -329,7 +492,7 @@ export async function writeUploadMarkdown(
  * whose base file also exists in the same directory.
  */
 export async function listUploads(sessionId: string): Promise<UploadInfo[]> {
-  const uploadsDir = path.join(await workspaceDirForSession(sessionId), "uploads");
+  const uploadsDir = path.join(await workspaceDirForSession(sessionId), FILES_SUBDIR);
   let entries: string[];
   try {
     entries = await fs.readdir(uploadsDir);
@@ -341,6 +504,8 @@ export async function listUploads(sessionId: string): Promise<UploadInfo[]> {
   const results: UploadInfo[] = [];
 
   for (const entry of entries) {
+    // Hide system files and the report (surfaced separately).
+    if (entry === "report.md" || SYSTEM_FILES.has(entry)) continue;
     // Skip *.md companions: a file ending in .md whose base (without .md) also exists
     if (entry.endsWith(".md")) {
       const base = entry.slice(0, -3);
@@ -370,7 +535,7 @@ export async function readUploadMarkdown(
   sourceFileName: string
 ): Promise<{ markdown: string; bytes: number }> {
   const safeName = path.basename(sourceFileName).replace(/[/\\]/g, "_");
-  const uploadsDir = path.join(await workspaceDirForSession(sessionId), "uploads");
+  const uploadsDir = path.join(await workspaceDirForSession(sessionId), FILES_SUBDIR);
   const mdPath = path.join(uploadsDir, `${safeName}.md`);
 
   try {
@@ -395,7 +560,7 @@ export async function readUploadSource(
   fileName: string
 ): Promise<string> {
   const safeName = path.basename(fileName).replace(/[/\\]/g, "_");
-  const uploadsDir = path.join(await workspaceDirForSession(sessionId), "uploads");
+  const uploadsDir = path.join(await workspaceDirForSession(sessionId), FILES_SUBDIR);
   try {
     return await fs.readFile(path.join(uploadsDir, safeName), "utf8");
   } catch {
@@ -452,6 +617,102 @@ export async function resolveWorkspaceFile(
 // ── New helpers ────────────────────────────────────────────────────────────────
 
 /**
+ * Writes the roadmap body to <workspace>/roadmap.md (workspace root). The agent
+ * maintains its checkboxes as it progresses; the app parses them for the
+ * progress bar. No-op if the goal has no roadmap.
+ */
+export async function writeRoadmapFile(
+  sessionId: string,
+  roadmapText: string
+): Promise<void> {
+  if (!roadmapText) return;
+  const wsDir = await workspaceDirForSession(sessionId);
+  await fs.writeFile(path.join(wsDir, "roadmap.md"), roadmapText, "utf8");
+}
+
+/**
+ * Returns the roadmap text for a session (from state first, then roadmap.md).
+ */
+export async function getRoadmapText(sessionId: string): Promise<string> {
+  try {
+    const state = await readSessionState(sessionId);
+    if (state.roadmapText) return state.roadmapText;
+  } catch {
+    // Fall through to file read
+  }
+  try {
+    const wsDir = await workspaceDirForSession(sessionId);
+    return await fs.readFile(path.join(wsDir, "roadmap.md"), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Parses the session's roadmap.md into structured progress.
+ * Sections are `##`/`#` headings; steps are GitHub task-list items
+ * (`- [ ]` / `- [x]`). Items before any heading go under "General".
+ * Returns null if there is no roadmap or it has no checklist items.
+ */
+export async function readRoadmapState(
+  sessionId: string
+): Promise<RoadmapState | null> {
+  const text = await getRoadmapTextFromFile(sessionId);
+  if (!text) return null;
+  return parseRoadmap(text);
+}
+
+async function getRoadmapTextFromFile(sessionId: string): Promise<string> {
+  try {
+    const wsDir = await workspaceDirForSession(sessionId);
+    return await fs.readFile(path.join(wsDir, "roadmap.md"), "utf8");
+  } catch {
+    return "";
+  }
+}
+
+export function parseRoadmap(text: string): RoadmapState | null {
+  const lines = text.split("\n");
+  const sections: RoadmapSection[] = [];
+  let current: RoadmapSection | null = null;
+  let total = 0;
+  let done = 0;
+
+  const ensureSection = (title: string): void => {
+    current = { title, steps: [] };
+    sections.push(current);
+  };
+
+  for (const raw of lines) {
+    const line = raw.trimEnd();
+    const heading = /^#{1,6}\s+(.*)$/.exec(line.trim());
+    if (heading) {
+      ensureSection(heading[1].trim());
+      continue;
+    }
+    const task = /^\s*[-*]\s+\[([ xX])\]\s+(.*)$/.exec(line);
+    if (task) {
+      if (!current) ensureSection("General");
+      const isDone = task[1].toLowerCase() === "x";
+      current!.steps.push({ label: task[2].trim(), done: isDone });
+      total += 1;
+      if (isDone) done += 1;
+    }
+  }
+
+  // Drop empty sections (headings with no tasks)
+  const nonEmpty = sections.filter((s) => s.steps.length > 0);
+  if (total === 0) return null;
+
+  return {
+    sections: nonEmpty,
+    totalSteps: total,
+    doneSteps: done,
+    pct: total === 0 ? 0 : Math.round((done / total) * 100),
+  };
+}
+
+/**
  * Returns the goal text for a session.
  * Reads from SessionState.goalText first; falls back to reading goal.md.
  */
@@ -472,6 +733,48 @@ export async function getGoalText(sessionId: string): Promise<string> {
 }
 
 /**
+ * Creates an empty `agents.md` stub on the workspace root if one doesn't
+ * already exist. Idempotent — never overwrites a user-edited file.
+ *
+ * `agents.md` is the per-chat local memory file (like Claude.md): the
+ * model's long-term instructions that survive compaction. It's listed in
+ * the sidebar and editable via the in-app editor; the report-compaction
+ * plugin re-injects it after compaction.
+ */
+export async function writeAgentsStub(sessionId: string): Promise<void> {
+  const wsDir = await workspaceDirForSession(sessionId);
+  const filePath = path.join(wsDir, AGENTS_FILE_NAME);
+  try {
+    await fs.stat(filePath);
+    return; // already exists
+  } catch {
+    // missing — write stub
+  }
+  const stub = "";
+  await fs.writeFile(filePath, stub, "utf8");
+}
+
+/**
+ * Returns the per-chat AGENTS.md content (the model's long-term memory file),
+ * or null if the file does not exist or is still the empty stub.
+ */
+export async function getAgentsText(sessionId: string): Promise<string | null> {
+  const wsDir = await workspaceDirForSession(sessionId);
+  const filePath = path.join(wsDir, AGENTS_FILE_NAME);
+  let raw: string;
+  try {
+    raw = await fs.readFile(filePath, "utf8");
+  } catch {
+    return null;
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  return trimmed;
+}
+
+/**
  * Returns a time-injection string if this is the first turn OR if 12+ hours
  * have elapsed since the last injection. Updates lastTimeUpdateMs in state.
  * Returns null if no injection is needed.
@@ -479,23 +782,22 @@ export async function getGoalText(sessionId: string): Promise<string> {
 export async function bumpTimeIfDue(sessionId: string): Promise<string | null> {
   const TWELVE_HOURS_MS = 12 * 60 * 60 * 1000;
 
-  let state: SessionState;
+  let now: number | null;
   try {
-    state = await readSessionState(sessionId);
+    now = await updateSessionState(sessionId, (state) => {
+      const t = Date.now();
+      const lastUpdate = state.lastTimeUpdateMs;
+      const isDue =
+        lastUpdate === undefined || t - lastUpdate >= TWELVE_HOURS_MS;
+      if (!isDue) return null;
+      state.lastTimeUpdateMs = t;
+      return t;
+    });
   } catch {
     return null;
   }
 
-  const now = Date.now();
-  const lastUpdate = state.lastTimeUpdateMs;
-
-  const isDue =
-    lastUpdate === undefined || now - lastUpdate >= TWELVE_HOURS_MS;
-
-  if (!isDue) return null;
-
-  state.lastTimeUpdateMs = now;
-  await writeSessionState(sessionId, state);
+  if (now === null) return null;
 
   const d = new Date(now);
   const weekdays = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
@@ -520,9 +822,117 @@ export async function addLoadedContextBytes(
   sessionId: string,
   n: number
 ): Promise<void> {
-  const state = await readSessionState(sessionId);
-  state.loadedContextBytes = (state.loadedContextBytes ?? 0) + n;
-  await writeSessionState(sessionId, state);
+  await updateSessionState(sessionId, (state) => {
+    state.loadedContextBytes = (state.loadedContextBytes ?? 0) + n;
+  });
+}
+
+/**
+ * Records that the agent read `bytes` of content from file `pathKey` via the
+ * `read` tool. Deduplicated: we keep the LARGEST read seen for a given path, so
+ * repeated/partial reads of the same file don't inflate the document total.
+ * Returns the new sum of all recorded read-document bytes.
+ */
+export async function recordReadDocBytes(
+  sessionId: string,
+  pathKey: string,
+  bytes: number
+): Promise<number> {
+  return updateSessionState(sessionId, (state) => {
+    const map = state.readDocBytes ?? {};
+    const key = pathKey || "(unknown)";
+    if (bytes > (map[key] ?? 0)) {
+      map[key] = bytes;
+    }
+    state.readDocBytes = map;
+    return Object.values(map).reduce((a, b) => a + b, 0);
+  });
+}
+
+/**
+ * Sum of all bytes the agent has read into context (across unique files).
+ */
+export function sumReadDocBytes(state: SessionState): number {
+  const map = state.readDocBytes ?? {};
+  return Object.values(map).reduce((a, b) => a + b, 0);
+}
+
+/**
+ * Deletes a session's workspace directory AND the `.sessions/<id>` mapping
+ * file. Idempotent — missing paths are ignored. Caller is responsible for
+ * also calling the opencode engine's `DELETE /session/:id` so the session
+ * disappears from `GET /session?roots=true`.
+ */
+export async function deleteSession(sessionId: string): Promise<void> {
+  // Capture the workspace dir BEFORE unlinking the state file — once the state
+  // file is gone, workspaceDirForSession falls back to the wrong path and the
+  // real UUID workspace would never be deleted.
+  const wsDir = await workspaceDirForSession(sessionId);
+
+  // Unlink the state mapping (cheap, in .sessions/)
+  try {
+    await fs.unlink(path.join(mappingDir(), mappedWorkspaceDirName(sessionId)));
+  } catch {
+    // Missing state file is fine
+  }
+
+  // Remove the workspace dir (uploads, report, goal, roadmap, agents, etc.)
+  try {
+    await fs.rm(wsDir, { recursive: true, force: true });
+  } catch {
+    // Missing workspace dir is fine
+  }
+}
+
+// ── Presented deliverables ────────────────────────────────────────────────────
+//
+// The agent marks a file as a "presented" deliverable via the workspace MCP
+// `present_file` tool, which appends the file's basename to
+// `<ws>/output/.presented` (one name per line). Both the MCP server (engine
+// container) and the app read/write this marker through the shared /workspaces
+// volume — it is the cross-container channel since the MCP cannot see the app's
+// sessionId. listEnvFiles surfaces these under the "Presented" group.
+
+function presentedFilePath(wsDir: string): string {
+  return path.join(wsDir, FILES_SUBDIR, ".presented");
+}
+
+/**
+ * Reads the set of presented file basenames for a session.
+ */
+export async function readPresented(sessionId: string): Promise<Set<string>> {
+  try {
+    const wsDir = await workspaceDirForSession(sessionId);
+    const raw = await fs.readFile(presentedFilePath(wsDir), "utf8");
+    return new Set(
+      raw
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+    );
+  } catch {
+    return new Set();
+  }
+}
+
+/**
+ * Marks a file as a presented deliverable (idempotent). App-side helper that
+ * mirrors what the MCP `present_file` tool does.
+ */
+export async function markPresented(
+  sessionId: string,
+  fileName: string
+): Promise<void> {
+  const safeName = path.basename(fileName).replace(/[/\\]/g, "_");
+  const current = await readPresented(sessionId);
+  if (current.has(safeName)) return;
+  current.add(safeName);
+  const wsDir = await workspaceDirForSession(sessionId);
+  await atomicWriteFile(
+    presentedFilePath(wsDir),
+    [...current].join("\n") + "\n",
+    "utf8"
+  );
 }
 
 /**
@@ -537,7 +947,7 @@ export async function replaceUpload(
   newMarkdown: string
 ): Promise<{ diff: string }> {
   const safeName = path.basename(fileName).replace(/[/\\]/g, "_");
-  const uploadsDir = path.join(await workspaceDirForSession(sessionId), "uploads");
+  const uploadsDir = path.join(await workspaceDirForSession(sessionId), FILES_SUBDIR);
   const mdPath = path.join(uploadsDir, `${safeName}.md`);
 
   let oldMarkdown = "";
@@ -556,6 +966,85 @@ export async function replaceUpload(
 
   await fs.writeFile(mdPath, newMarkdown, "utf8");
 
+  return { diff };
+}
+
+// ── In-app text editor (read/save agent-visible content) ──────────────────────
+
+/**
+ * Resolves the on-disk path of the AGENT-VISIBLE text for a named file, plus
+ * the path that an in-app edit should write back to.
+ *   - goal.md / roadmap.md     → workspace root
+ *   - report.md                → output/report.md
+ *   - converted upload (sidecar exists) → output/<name>.md  (what the agent reads)
+ *   - text upload (no sidecar) → output/<name>              (the source itself)
+ */
+async function resolveEditTarget(
+  sessionId: string,
+  name: string
+): Promise<string> {
+  const safeName = path.basename(name).replace(/[/\\]/g, "_");
+  const wsDir = await workspaceDirForSession(sessionId);
+
+  // Case-insensitive comparison so Windows dev paths (e.g. "Goal.md") still
+  // route correctly. The actual on-disk filename is always the canonical form.
+  const safeNameLower = safeName.toLowerCase();
+  if (
+    safeNameLower === "goal.md" ||
+    safeNameLower === "roadmap.md" ||
+    safeNameLower === AGENTS_FILE_NAME.toLowerCase()
+  ) {
+    // Use the canonical casing for the on-disk path
+    const canonical =
+      safeNameLower === AGENTS_FILE_NAME.toLowerCase() ? AGENTS_FILE_NAME : safeName.toLowerCase();
+    return path.join(wsDir, canonical);
+  }
+
+  const filesDir = path.join(wsDir, FILES_SUBDIR);
+  if (safeName === "report.md" || safeName.endsWith(".md")) {
+    return path.join(filesDir, safeName);
+  }
+
+  // For a non-.md upload, prefer its sidecar (the converted markdown the agent
+  // reads); fall back to the source for plain-text uploads.
+  const sidecar = path.join(filesDir, `${safeName}.md`);
+  try {
+    await fs.access(sidecar);
+    return sidecar;
+  } catch {
+    return path.join(filesDir, safeName);
+  }
+}
+
+/**
+ * Reads the agent-visible text for a file (for the in-app editor).
+ */
+export async function readWorkspaceText(
+  sessionId: string,
+  name: string
+): Promise<string> {
+  const target = await resolveEditTarget(sessionId, name);
+  return fs.readFile(target, "utf8");
+}
+
+/**
+ * Saves edited text back to the agent-visible file and returns a unified diff
+ * of the change (for notifying the agent).
+ */
+export async function writeWorkspaceText(
+  sessionId: string,
+  name: string,
+  content: string
+): Promise<{ diff: string }> {
+  const target = await resolveEditTarget(sessionId, name);
+  let oldText = "";
+  try {
+    oldText = await fs.readFile(target, "utf8");
+  } catch {
+    // New file — diff shows everything added
+  }
+  await atomicWriteFile(target, content, "utf8");
+  const diff = diffTexts(oldText, content, path.basename(name));
   return { diff };
 }
 

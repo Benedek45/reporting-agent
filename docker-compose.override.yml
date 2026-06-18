@@ -1,0 +1,38 @@
+# DEV OVERLAY — AUTO-MERGED BY BARE `docker compose` COMMANDS.
+#
+# WARNING: This file is automatically merged by Docker Compose whenever you run
+# `docker compose up` (or build/run/etc.) WITHOUT an explicit `-f` flag.
+# This means bare `docker compose up` runs the DEV configuration (next dev,
+# bind-mounted source), NOT the production images.
+#
+# PRODUCTION: always use explicit `-f docker-compose.yml` to bypass this overlay:
+#   docker compose -f docker-compose.yml up --build
+#   docker compose -f docker-compose.yml down
+# The start.ps1 / stop.ps1 scripts already do this.
+#
+# Purpose: iterate WITHOUT image rebuilds.
+#   - app: runs `next dev` with the source bind-mounted -> instant UI + goal
+#     reloads on save (no `docker compose build app`).
+#   - opencode: the engine source tree is bind-mounted, so editing any vendored
+#     opencode .ts and running `docker compose restart opencode` picks it up
+#     (Bun runs the TypeScript directly — no rebuild). This also makes the
+#     EROFS/.gitignore boot patch durable across container recreation.
+services:
+  app:
+    command: ["npm", "run", "dev", "--", "-H", "0.0.0.0", "-p", "3000"]
+    environment:
+      NODE_ENV: development
+      # Bind-mounted source on a Windows host -> use polling so the Next.js dev
+      # server reliably detects file changes inside the Linux container.
+      WATCHPACK_POLLING: "true"
+      CHOKIDAR_USEPOLLING: "true"
+    volumes:
+      - ./src:/app/src
+      - ./goals:/app/goals
+      - ./.opencode:/app/.opencode
+      - ./next.config.mjs:/app/next.config.mjs
+      - ./tsconfig.json:/app/tsconfig.json
+
+  opencode:
+    volumes:
+      - ./vendor/opencode/packages/opencode/src:/app/packages/opencode/src

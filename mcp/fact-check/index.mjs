@@ -35,22 +35,37 @@ const VERIFY_CLAIM_TOOL = {
   name: "verify_claim",
   description:
     "Checks an external factual claim or figure against authoritative web sources via Tavily Search. " +
-    "Use this for regulatory references, emission factors, benchmarks, thresholds, or market statistics — " +
-    "anything that depends on current external facts rather than the user's uploaded documents. " +
-    "Returns a verdict of SUPPORTED, CONTRADICTED, or UNCERTAIN with a short evidence list. " +
-    "If the API key is not configured, returns NEEDS_CONFIG so you can fall back to manual verification.",
+    "WHEN TO USE: use for regulatory references, emission factors, benchmarks, thresholds, " +
+    "or market statistics — anything that depends on current external facts rather than the " +
+    "user's uploaded documents. Do NOT use this to verify figures that come from the user's " +
+    "own documents; trace those directly against the source file instead. " +
+    "WHEN NOT TO USE: do not call this for every claim — reserve it for external facts where " +
+    "authoritative web sources are the right check. Calling it for internal company data " +
+    "will produce UNCERTAIN results that are not actionable. " +
+    "SIDE EFFECTS: makes an outbound HTTP request to Tavily Search. Counts against API quota. " +
+    "VERDICTS RETURNED: SUPPORTED (Tavily synthesised a corroborating answer from web sources — " +
+    "a heuristic, not a guarantee; review the evidence) or UNCERTAIN (no direct corroborating " +
+    "answer found; verify manually). " +
+    "IMPORTANT: this tool never returns CONTRADICTED automatically. Detecting contradiction " +
+    "requires semantic reasoning beyond keyword search. If the evidence looks contradictory, " +
+    "inspect the sources yourself and escalate to the user. " +
+    "EMPTY/ERROR RETURN: if FACTCHECK_API_KEY is not set, returns status NEEDS_CONFIG — " +
+    "fall back to webfetch/websearch and flag the claim for manual verification. " +
+    "Network errors return UNCERTAIN with a note.",
   inputSchema: {
     type: "object",
     properties: {
       claim: {
         type: "string",
-        description: "The factual claim or figure to verify, stated as a complete sentence.",
+        description:
+          "The factual claim or figure to verify, stated as a complete, self-contained sentence. " +
+          "Example: 'The EU CSRD entered into force on 5 January 2023.'",
       },
       context: {
         type: "string",
         description:
           "Optional surrounding context, e.g. the report sentence this claim appears in. " +
-          "Helps the search produce more relevant results.",
+          "Helps the search produce more relevant results. Keep it brief (1-2 sentences).",
       },
     },
     required: ["claim"],

@@ -44,10 +44,13 @@ export default function TodoPanel({ todos }: TodoPanelProps) {
           const icon = STATUS_ICONS[todo.status] ?? "○";
           const statusLabel = STATUS_LABELS[todo.status] ?? todo.status;
           const priorityLabel = PRIORITY_LABELS[todo.priority] ?? todo.priority;
+          // Use content as a stable key (titles are unique per todo list).
+          // Fall back to index only if content is somehow empty.
+          const stableKey = todo.content || String(i);
 
           return (
             <li
-              key={i}
+              key={stableKey}
               className={`todo-item todo-status-${todo.status}`}
               title={`${statusLabel} · Priority: ${priorityLabel}`}
             >

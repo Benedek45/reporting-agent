@@ -17,15 +17,17 @@ services:
       context: .
       dockerfile: docker/opencode.Dockerfile
     image: reporting-agent-opencode:local
-    # Secrets (OPENCODE_GO_API_KEY) come from .env at runtime, never baked in.
-    env_file: .env
+    # Secrets are passed as explicit named variables only — no bulk env_file import.
+    # Values are interpolated from .env at compose time via ${VAR} syntax.
     environment:
+      # Secrets: only the two keys the engine actually needs.
+      OPENCODE_GO_API_KEY: ${OPENCODE_GO_API_KEY}
+      FACTCHECK_API_KEY: ${FACTCHECK_API_KEY:-}
       # Load OUR config explicitly; do not walk the tree for stray configs.
       OPENCODE_CONFIG: /config/opencode.json
       OPENCODE_CONFIG_DIR: /config/.opencode
       OPENCODE_DISABLE_PROJECT_CONFIG: "true"
       # The report-compaction plugin resolves session workspaces under this path.
-      # `environment` overrides the host-dev value that env_file (.env) would set.
       WORKSPACES_ROOT: /workspaces
     volumes:
       - ./opencode.json:/config/opencode.json:ro

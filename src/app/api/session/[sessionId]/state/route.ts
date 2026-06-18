@@ -2,13 +2,23 @@ export const runtime = "nodejs";
 
 import { NextRequest } from "next/server";
 import {
-  getSessionTokensDetail,
+  getLatestContextTokens,
+  contextUsedTokens,
   getProviderContextLimit,
   getTodos,
   getSessionStatus,
 } from "@/lib/opencode";
-import { readSessionState } from "@/lib/workspace";
-import type { TodoItem, ContextBreakdownItem } from "@/types";
+import {
+  readSessionState,
+  sumReadDocBytes,
+  sessionDirectory,
+  readRoadmapState,
+} from "@/lib/workspace";
+import type {
+  TodoItem,
+  ContextBreakdownItem,
+  RoadmapState,
+} from "@/types";
 
 interface StateResponse {
   usedTokens: number;
@@ -17,6 +27,7 @@ interface StateResponse {
   todos: TodoItem[];
   status: string;
   breakdown: ContextBreakdownItem[];
+  roadmap: RoadmapState | null;
 }
 
 export async function GET(
@@ -30,18 +41,17 @@ export async function GET(
   }
 
   try {
+    const directory = await sessionDirectory(sessionId);
     const [tokensDetail, contextLimit, todos, status] = await Promise.all([
-      getSessionTokensDetail(sessionId),
+      getLatestContextTokens(sessionId, directory),
       getProviderContextLimit(),
       getTodos(sessionId).catch((): TodoItem[] => []),
       getSessionStatus(sessionId).catch(() => "idle"),
     ]);
 
-    const usedTokens =
-      (tokensDetail.input ?? 0) +
-      (tokensDetail.output ?? 0) +
-      (tokensDetail.cache?.read ?? 0) +
-      (tokensDetail.cache?.write ?? 0);
+    // True current context-window occupancy from the latest turn
+    // (NOT the engine's cumulative lifetime sum).
+    const usedTokens = contextUsedTokens(tokensDetail);
 
     const pct = Math.min(100, Math.round((usedTokens / contextLimit) * 100));
 
@@ -53,7 +63,10 @@ export async function GET(
       uploads: {} as Record<string, number>,
       loadedContextBytes: 0,
     }));
-    const documentTokens = Math.ceil((state.loadedContextBytes ?? 0) / 4);
+    // Documents = files loaded via the button + files the agent read itself
+    const documentBytes =
+      (state.loadedContextBytes ?? 0) + sumReadDocBytes(state);
+    const documentTokens = Math.ceil(documentBytes / 4);
     const systemBaseline = 6000; // approximate constant
     const conversationTokens = Math.max(
       0,
@@ -67,6 +80,8 @@ export async function GET(
       { label: "Conversation", tokens: conversationTokens },
     ];
 
+    const roadmap = await readRoadmapState(sessionId).catch(() => null);
+
     const response: StateResponse = {
       usedTokens,
       contextLimit,
@@ -74,6 +89,7 @@ export async function GET(
       todos,
       status,
       breakdown,
+      roadmap,
     };
 
     return Response.json(response);

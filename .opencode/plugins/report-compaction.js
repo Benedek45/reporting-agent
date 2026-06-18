@@ -27,8 +27,26 @@ function sanitize(name) {
 
 async function resolveWorkspace(sessionID) {
   const mapPath = path.join(WORKSPACES_ROOT, ".sessions", sanitize(sessionID))
-  const workspaceId = (await readFile(mapPath, "utf8")).trim()
-  return path.join(WORKSPACES_ROOT, sanitize(workspaceId))
+  let raw
+  try {
+    raw = await readFile(mapPath, "utf8")
+  } catch {
+    return null
+  }
+  raw = raw.trim()
+  // The state file is JSON ({ workspaceId, messageCount, uploads, ... }).
+  // Older sessions wrote a bare UUID string. Handle both.
+  if (raw.startsWith("{")) {
+    try {
+      const parsed = JSON.parse(raw)
+      if (parsed && typeof parsed.workspaceId === "string") {
+        return path.join(WORKSPACES_ROOT, sanitize(parsed.workspaceId))
+      }
+    } catch {
+      return null
+    }
+  }
+  return path.join(WORKSPACES_ROOT, sanitize(raw))
 }
 
 function extractStatus(report) {
@@ -55,13 +73,28 @@ export const ReportCompaction = async () => ({
 
     try {
       const ws = await resolveWorkspace(input.sessionID)
-      const [goal, report] = await Promise.allSettled([
+      if (!ws) return
+
+      const [goal, report, agents] = await Promise.allSettled([
         readFile(path.join(ws, "goal.md"), "utf8"),
         readFile(path.join(ws, "output", "report.md"), "utf8"),
+        readFile(path.join(ws, "AGENTS.md"), "utf8"),
       ])
 
       if (goal.status === "fulfilled" && goal.value.trim()) {
         output.context.push("## Active goal (goal.md)\n" + goal.value.trim().slice(0, 2000))
+      }
+
+      if (agents.status === "fulfilled" && agents.value.trim()) {
+        // The user's per-chat memory file (like Claude.md) — re-inject after
+        // compaction so it survives as long-term context. Skip the empty stub.
+        const text = agents.value.trim()
+        const isStub =
+          text.startsWith("# Engagement notes") &&
+          text.includes("Write house style, formatting, or per-engagement instructions")
+        if (!isStub) {
+          output.context.push("## Engagement notes (agents.md — user's long-term memory)\n" + text.slice(0, 6000))
+        }
       }
 
       if (report.status === "fulfilled" && report.value.trim()) {

@@ -12,6 +12,30 @@ import htmldocx
 app = FastAPI(title="reporting-agent converter")
 md = MarkItDown(enable_plugins=False)
 
+# Maximum upload size: default 50 MB, overridable via MAX_UPLOAD_BYTES env var.
+_MAX_UPLOAD_BYTES: int = int(os.environ.get("MAX_UPLOAD_BYTES", 50_000_000))
+
+
+def _ssrf_safe_url_fetcher(url: str, timeout: int = 10):
+    """
+    WeasyPrint url_fetcher that blocks all non-data URLs to prevent SSRF.
+
+    User-controlled Markdown may contain <img src="http://internal-host/...">
+    or similar. Without this guard, WeasyPrint would fetch those URLs from
+    inside the container, potentially reaching internal services.
+
+    We allow only data: URIs (inline base64 images). All http/https/file URLs
+    are blocked. This means external images will not render in PDFs, which is
+    an acceptable trade-off for a compliance document converter.
+    """
+    if url.startswith("data:"):
+        # Let WeasyPrint handle data URIs natively via its default fetcher.
+        return weasyprint.default_url_fetcher(url)
+    raise ValueError(
+        f"Blocked external URL in document rendering (SSRF prevention): {url!r}. "
+        "Only data: URIs are allowed in rendered documents."
+    )
+
 # Minimal CSS for readable PDF output (no external dependencies)
 _BASE_CSS = """
 body {
@@ -84,6 +108,11 @@ def health():
 @app.post("/convert")
 async def convert(file: UploadFile = File(...)):
     data = await file.read()
+    if len(data) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"file too large: {len(data)} bytes exceeds limit of {_MAX_UPLOAD_BYTES} bytes",
+        )
     ext = os.path.splitext(file.filename or "")[1].lower()
     try:
         result = md.convert_stream(io.BytesIO(data), file_extension=ext)
@@ -105,7 +134,14 @@ async def render(req: RenderRequest):
         - DOCX: Content-Type application/vnd.openxmlformats-officedocument
                          .wordprocessingml.document, binary body
         - 400 on unknown format
+        - 413 if the markdown payload exceeds MAX_UPLOAD_BYTES
     """
+    if len(req.markdown.encode("utf-8")) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(
+            status_code=413,
+            detail=f"markdown payload too large: exceeds limit of {_MAX_UPLOAD_BYTES} bytes",
+        )
+
     fmt = req.format.lower()
     if fmt not in ("pdf", "docx"):
         raise HTTPException(status_code=400, detail=f"unknown format '{req.format}'; use 'pdf' or 'docx'")
@@ -114,7 +150,10 @@ async def render(req: RenderRequest):
 
     if fmt == "pdf":
         try:
-            pdf_bytes = weasyprint.HTML(string=html).write_pdf()
+            # Use the SSRF-safe url_fetcher to block external resource fetching.
+            pdf_bytes = weasyprint.HTML(string=html).write_pdf(
+                url_fetcher=_ssrf_safe_url_fetcher
+            )
         except Exception as exc:  # noqa: BLE001
             raise HTTPException(status_code=500, detail=f"PDF rendering failed: {exc}")
         return Response(

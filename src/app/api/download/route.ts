@@ -30,10 +30,9 @@ function isTextExtension(ext: string): boolean {
 
 /**
  * Resolves the absolute path to a named file within the session workspace.
- * Handles the three known file kinds:
- *   - "report.md"  → output/report.md
- *   - "goal.md"    → goal.md (workspace root)
- *   - anything else → uploads/<name>
+ * Since uploads + output were merged into one folder:
+ *   - "goal.md" / "roadmap.md" → workspace root (system files)
+ *   - everything else (incl. "report.md" and uploads) → output/<name>
  *
  * Returns null if the name is unsafe (path traversal attempt).
  */
@@ -47,16 +46,12 @@ async function resolveFilePath(
     return null;
   }
 
-  if (name === "report.md") {
-    return resolveWorkspaceFile(sessionId, "report.md", "output");
+  if (name === "goal.md" || name === "roadmap.md" || name === "AGENTS.md") {
+    return resolveWorkspaceFile(sessionId, name);
   }
 
-  if (name === "goal.md") {
-    return resolveWorkspaceFile(sessionId, "goal.md");
-  }
-
-  // Default: uploads directory
-  return resolveWorkspaceFile(sessionId, name, "uploads");
+  // Default: merged files folder (uploads + report).
+  return resolveWorkspaceFile(sessionId, name, "output");
 }
 
 /**
@@ -96,7 +91,11 @@ export async function GET(req: NextRequest): Promise<Response> {
       return Response.json({ error: "Invalid file name" }, { status: 400 });
     }
 
-    const isReportOrGoal = name === "report.md" || name === "goal.md";
+    const isReportOrGoal =
+      name === "report.md" ||
+      name === "goal.md" ||
+      name === "roadmap.md" ||
+      name === "AGENTS.md";
 
     if (format === "original") {
       // Serve raw bytes
@@ -112,10 +111,13 @@ export async function GET(req: NextRequest): Promise<Response> {
         ? `text/plain; charset=utf-8`
         : "application/octet-stream";
 
+      // RFC 5987: provide an ASCII fallback filename plus the UTF-8 encoded
+      // filename* parameter so browsers handle non-ASCII names correctly.
+      const asciiName = name.replace(/[^\x20-\x7E]/g, "_");
       return new Response(new Uint8Array(data), {
         headers: {
           "Content-Type": contentType,
-          "Content-Disposition": `attachment; filename="${encodeURIComponent(name)}"`,
+          "Content-Disposition": `attachment; filename="${asciiName}"; filename*=UTF-8''${encodeURIComponent(name)}`,
           "Content-Length": String(data.byteLength),
         },
       });
@@ -147,10 +149,11 @@ export async function GET(req: NextRequest): Promise<Response> {
       }
 
       const mdName = name.endsWith(".md") ? name : `${name}.md`;
+      const asciiMdName = mdName.replace(/[^\x20-\x7E]/g, "_");
       return new Response(markdown, {
         headers: {
           "Content-Type": "text/markdown; charset=utf-8",
-          "Content-Disposition": `attachment; filename="${encodeURIComponent(mdName)}"`,
+          "Content-Disposition": `attachment; filename="${asciiMdName}"; filename*=UTF-8''${encodeURIComponent(mdName)}`,
         },
       });
     }
@@ -197,12 +200,13 @@ export async function GET(req: NextRequest): Promise<Response> {
     const baseName = name.replace(/\.[^.]+$/, "");
     const outputName = `${baseName}.${format}`;
     const contentType = CONTENT_TYPES[format] ?? "application/octet-stream";
+    const asciiOutputName = outputName.replace(/[^\x20-\x7E]/g, "_");
 
     // Stream the converter response body directly to the client
     return new Response(renderRes.body, {
       headers: {
         "Content-Type": contentType,
-        "Content-Disposition": `attachment; filename="${encodeURIComponent(outputName)}"`,
+        "Content-Disposition": `attachment; filename="${asciiOutputName}"; filename*=UTF-8''${encodeURIComponent(outputName)}`,
       },
     });
   } catch (err) {

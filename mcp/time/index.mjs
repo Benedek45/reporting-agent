@@ -28,17 +28,27 @@ const PROTOCOL_VERSION = "2024-11-05";
 const GET_CURRENT_TIME_TOOL = {
   name: "get_current_time",
   description:
-    "Returns the current date and time. " +
-    "Optionally accepts an IANA timezone name (e.g. 'Europe/Berlin', 'America/New_York'). " +
-    "Defaults to UTC. " +
-    "Use this whenever you need to know today's date or the current time — do not guess.",
+    "Returns the current date and time as an ISO-8601 string and a human-readable line. " +
+    "WHEN TO USE: call this when you need to confirm today's exact date or time — " +
+    "for example, when reasoning about reporting deadlines, fiscal year boundaries, " +
+    "or any time-sensitive determination. " +
+    "WHEN NOT TO USE: do not call this on every turn as a routine check; the current " +
+    "date is already injected into your system context at session start. Only call " +
+    "when you need a fresh, precise timestamp (e.g. after a long session or for " +
+    "deadline arithmetic). This tool does NOT schedule actions or set reminders — " +
+    "it only reads the clock. " +
+    "SIDE EFFECTS: none. Read-only. " +
+    "ERROR RETURN: if an unrecognised timezone is passed, returns an error message " +
+    "with isError=true; retry with a valid IANA name or omit the parameter for UTC.",
   inputSchema: {
     type: "object",
     properties: {
       timezone: {
         type: "string",
         description:
-          "IANA timezone name, e.g. 'UTC', 'Europe/Berlin', 'America/New_York'. Defaults to 'UTC'.",
+          "Optional IANA timezone name, e.g. 'UTC', 'Europe/Berlin', 'America/New_York'. " +
+          "Defaults to 'UTC' if omitted. Use the user's local timezone when relevant " +
+          "(e.g. 'Europe/Budapest' for a Hungarian company).",
       },
     },
     required: [],

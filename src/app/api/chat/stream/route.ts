@@ -4,7 +4,8 @@ import { NextRequest } from "next/server";
 import {
   openEventStream,
   promptAsync,
-  getSessionTokensDetail,
+  getLatestContextTokens,
+  contextUsedTokens,
   getProviderContextLimit,
   revertSession,
 } from "@/lib/opencode";
@@ -12,14 +13,43 @@ import {
   incrementMessageCount,
   sessionDirectory,
   readSessionState,
+  readRoadmapState,
   readUploadMarkdown,
   addLoadedContextBytes,
+  recordReadDocBytes,
+  sumReadDocBytes,
   bumpTimeIfDue,
+  getAgentsText,
   getGoalText,
 } from "@/lib/workspace";
 import type { StreamEvent, TodoItem, ContextBreakdownItem } from "@/types";
 
-const TIMEOUT_MS = 180_000; // 3 minutes safety timeout
+/**
+ * Always-on guidance appended to the first turn's system context. Kept here
+ * (injected dynamically) rather than in the prompt/skill files so those stay
+ * unchanged. Covers the merged workspace folder, deliverable presentation, and
+ * roadmap upkeep.
+ */
+const WORKSPACE_GUIDANCE =
+  "## Workspace, deliverables & roadmap\n" +
+  "- All files (the documents the user uploads AND the report you write) live in " +
+  "one folder. Continue writing the report to `output/report.md` as before.\n" +
+  "- `report.md` is shown to the user automatically. If you produce any OTHER " +
+  "deliverable file, call the `present_file` tool with its absolute path so the " +
+  "user sees it under 'Presented'.\n" +
+  "- A `roadmap.md` checklist tracks the data/sections this report needs. As you " +
+  "collect information and complete sections, edit `roadmap.md` and tick the " +
+  "matching items (`- [ ]` → `- [x]`). Keep it accurate — it drives the user's " +
+  "progress bar. Do not invent new items; only check off existing ones (you may " +
+  "add a sub-item only if the user introduces genuinely new in-scope data).";
+
+// Idle timeout: max time with ZERO upstream activity before we give up.
+// This is reset on every chunk received from the engine's /event stream.
+// Because a subagent (fact-checker) `task` runs in a child session whose
+// events still flow through the same directory event stream, this timer keeps
+// resetting while the subagent works — so long fact-checks (minutes) no longer
+// get cut off. It only fires after genuine silence.
+const IDLE_TIMEOUT_MS = 300_000; // 5 minutes of complete silence
 const MAX_CONTEXT_FILE_BYTES = Number(
   process.env.MAX_CONTEXT_FILE_BYTES ?? 200_000
 );
@@ -63,11 +93,61 @@ function sseFrame(event: StreamEvent): string {
  *   { type: "done" }
  *   { type: "error",     error: string }
  */
+interface NotifyPayload {
+  kind: "upload" | "replace" | "edit";
+  files: { name: string; diff?: string }[];
+}
+
+/**
+ * Builds the prompt text for an out-of-band workspace notification (file
+ * upload / replacement / in-app edit). This is fired as its OWN agent turn
+ * (not bound to a user prompt), so the agent reacts immediately.
+ */
+function diffBlock(f: { name: string; diff?: string }): string {
+  return `### ${f.name}\n\`\`\`diff\n${f.diff ?? "(no diff available)"}\n\`\`\``;
+}
+
+function buildNotifyText(n: NotifyPayload): string {
+  const prefix = "[Workspace update — not a user message] ";
+  const tail =
+    "\n\nRead whatever is relevant, fold any useful data into the report, " +
+    "update roadmap.md to reflect new progress, then briefly tell the user what " +
+    "you found and what (if anything) you still need.";
+
+  if (n.kind === "upload") {
+    const fresh = n.files.filter((f) => !f.diff);
+    const changed = n.files.filter((f) => f.diff);
+    let msg = prefix;
+    if (fresh.length > 0) {
+      msg +=
+        `The user added ${fresh.length} new document(s): ` +
+        `${fresh.map((f) => f.name).join(", ")}. ` +
+        `Non-text files were auto-converted to Markdown and are readable in your workspace. `;
+    }
+    if (changed.length > 0) {
+      msg +=
+        `The user also replaced: ${changed.map((f) => f.name).join(", ")}.\n\n` +
+        changed.map(diffBlock).join("\n\n");
+    }
+    return msg + tail;
+  }
+
+  const verb = n.kind === "edit" ? "edited" : "replaced";
+  return (
+    prefix +
+    `The user ${verb} the following file(s). Review the changes below, update ` +
+    `the report and roadmap.md if they are affected, and briefly confirm what changed.\n\n` +
+    n.files.map(diffBlock).join("\n\n") +
+    tail
+  );
+}
+
 export async function POST(req: NextRequest): Promise<Response> {
   let sessionId: string;
   let userText: string | undefined;
   let editMessageId: string | undefined;
   let loadFileName: string | undefined;
+  let notify: NotifyPayload | undefined;
 
   try {
     const body = (await req.json()) as {
@@ -75,6 +155,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       text?: string;
       editMessageId?: string;
       loadFileName?: string;
+      notify?: NotifyPayload;
     };
     if (!body.sessionId || typeof body.sessionId !== "string") {
       return Response.json({ error: "sessionId is required" }, { status: 400 });
@@ -83,11 +164,15 @@ export async function POST(req: NextRequest): Promise<Response> {
     userText = body.text;
     editMessageId = body.editMessageId;
     loadFileName = body.loadFileName;
+    notify =
+      body.notify && Array.isArray(body.notify.files) && body.notify.files.length > 0
+        ? body.notify
+        : undefined;
 
-    // Must have either text or loadFileName
-    if (!userText && !loadFileName) {
+    // Must have text, a file to load, or a notification
+    if (!userText && !loadFileName && !notify) {
       return Response.json(
-        { error: "text or loadFileName is required" },
+        { error: "text, loadFileName, or notify is required" },
         { status: 400 }
       );
     }
@@ -145,12 +230,13 @@ export async function POST(req: NextRequest): Promise<Response> {
           await revertSession(sessionId, editMessageId, directory);
         }
 
-        // Step 3: increment message count
-        await incrementMessageCount(sessionId);
+        // Step 3: read state BEFORE incrementing so we can compute isFirstTurn
+        // from the pre-increment count. incrementMessageCount is called AFTER
+        // promptAsync succeeds to avoid a stale count if the prompt fails.
+        const preState = await readSessionState(sessionId);
+        const isFirstTurn = preState.messageCount === 0;
 
-        // Step 4: build system string
-        const state = await readSessionState(sessionId);
-        const isFirstTurn = state.messageCount === 1;
+        // Step 4: build system string (uses pre-increment state for goal/agents)
 
         const systemParts: string[] = [];
 
@@ -160,7 +246,42 @@ export async function POST(req: NextRequest): Promise<Response> {
         if (isFirstTurn) {
           const goalText = await getGoalText(sessionId);
           if (goalText) systemParts.push(goalText);
+
+          const agentsText = await getAgentsText(sessionId);
+          if (agentsText) {
+            systemParts.push(
+              `## Your long-term memory (AGENTS.md)\n\n` +
+                `This file is your persistent memory for this engagement. It survives context ` +
+                `compaction — anything you should remember long-term belongs here. Read it at ` +
+                `the start of each turn and keep it up to date with the user's preferences, ` +
+                `decisions, and standing instructions.\n\n${agentsText}`
+            );
+          }
+        } else {
+          // Periodic goal re-anchoring: every 5th user turn (post-increment
+          // count), inject a compact reminder of the active goal. This counters
+          // instruction fade after many tool calls — the model's attention to
+          // the original goal degrades over long conversations.
+          // We use the pre-increment count here; the actual post-increment count
+          // will be preState.messageCount + 1, so anchor when that equals 0 mod 5
+          // (i.e. preState.messageCount % 5 === 4).
+          const postIncrementCount = preState.messageCount + 1;
+          if (postIncrementCount % 5 === 0) {
+            const goalText = await getGoalText(sessionId);
+            if (goalText) {
+              const excerpt = goalText.slice(0, 600);
+              systemParts.push(
+                `REMINDER — Active goal: ${excerpt}${goalText.length > 600 ? "…" : ""}. ` +
+                  `Report status: keep all figures attributed to sources; ` +
+                  `use [DATA NEEDED: …] for anything missing; never fabricate.`
+              );
+            }
+          }
         }
+
+        // Workspace, deliverables & roadmap guidance — always injected so it
+        // survives compaction (re-injected each turn on top of compacted history).
+        systemParts.push(WORKSPACE_GUIDANCE);
 
         systemParts.push(
           "Reply in the same language the user writes in unless they ask otherwise."
@@ -176,17 +297,24 @@ export async function POST(req: NextRequest): Promise<Response> {
 
         const system = systemParts.filter(Boolean).join("\n\n");
 
-        // Determine the user-visible text
-        const text =
-          loadFileName && !userText
+        // Determine the prompt text for this turn
+        const text = userText
+          ? userText
+          : loadFileName
             ? `Please review the document "${loadFileName}" I've loaded into context.`
-            : (userText as string);
+            : notify
+              ? buildNotifyText(notify)
+              : "";
 
         // Step 5: open upstream SSE BEFORE prompting to avoid missing early events
         upstreamRes = await openEventStream(directory);
 
-        // Step 6: fire the async prompt
+        // Step 6: fire the async prompt, then increment the message count.
+        // Incrementing AFTER a successful prompt ensures the count stays in sync
+        // with the engine — a failed prompt does not advance the counter, and the
+        // edit/revert path does not double-count.
         await promptAsync(sessionId, text, { directory, system });
+        await incrementMessageCount(sessionId);
 
         // Step 7: parse upstream SSE and relay filtered events
         const body = upstreamRes.body;
@@ -198,30 +326,38 @@ export async function POST(req: NextRequest): Promise<Response> {
         let done = false;
         // partIDs whose deltas are the model's internal reasoning (not the answer)
         const reasoningParts = new Set<string>();
+        // tool-call part ids whose `read` output we've already counted toward
+        // the Documents context bucket (avoids redundant state writes)
+        const recordedReads = new Set<string>();
 
-        // Safety timeout
-        timeoutHandle = setTimeout(() => {
-          if (!done) {
-            done = true;
-            emit({ type: "done" });
-            close();
-          }
-        }, TIMEOUT_MS);
+        // Activity-based idle timeout. Re-armed on every upstream chunk
+        // (see the read loop below). Only fires after IDLE_TIMEOUT_MS of
+        // complete silence, so long subagent (fact-checker) runs — which keep
+        // the directory event stream busy — are not cut off.
+        const armIdleTimeout = (): void => {
+          if (timeoutHandle) clearTimeout(timeoutHandle);
+          timeoutHandle = setTimeout(() => {
+            if (!done) {
+              done = true;
+              emit({ type: "done" });
+              close();
+            }
+          }, IDLE_TIMEOUT_MS);
+        };
+        armIdleTimeout();
 
         const doFinish = async (): Promise<void> => {
           if (done) return;
           done = true;
           try {
             const [tokensDetail, contextLimit] = await Promise.all([
-              getSessionTokensDetail(sessionId),
+              getLatestContextTokens(sessionId, directory),
               getProviderContextLimit(),
             ]);
 
-            const usedTokens =
-              (tokensDetail.input ?? 0) +
-              (tokensDetail.output ?? 0) +
-              (tokensDetail.cache?.read ?? 0) +
-              (tokensDetail.cache?.write ?? 0);
+            // True current context-window occupancy from the latest turn
+            // (NOT the engine's cumulative lifetime sum).
+            const usedTokens = contextUsedTokens(tokensDetail);
 
             const pct = Math.min(
               100,
@@ -231,13 +367,15 @@ export async function POST(req: NextRequest): Promise<Response> {
             // Build breakdown (approximate — labeled as such)
             const reasoningTokens = tokensDetail.reasoning ?? 0;
 
-            // Re-read state to get latest loadedContextBytes
+            // Re-read state to get latest document byte counters
             const latestState = await readSessionState(sessionId).catch(
-              () => state
+              () => preState
             );
-            const documentTokens = Math.ceil(
-              (latestState.loadedContextBytes ?? 0) / 4
-            );
+            // Documents = files loaded via the button + files the agent read
+            const documentBytes =
+              (latestState.loadedContextBytes ?? 0) +
+              sumReadDocBytes(latestState);
+            const documentTokens = Math.ceil(documentBytes / 4);
             const systemBaseline = 6000; // approximate constant
             const conversationTokens = Math.max(
               0,
@@ -255,6 +393,13 @@ export async function POST(req: NextRequest): Promise<Response> {
           } catch {
             // Non-fatal — skip usage frame
           }
+          // Roadmap progress (parsed from roadmap.md) — non-fatal.
+          try {
+            const roadmap = await readRoadmapState(sessionId);
+            if (roadmap) emit({ type: "roadmap", roadmap });
+          } catch {
+            // No roadmap / parse error — skip
+          }
           emit({ type: "done" });
           if (timeoutHandle) clearTimeout(timeoutHandle);
           close();
@@ -264,9 +409,15 @@ export async function POST(req: NextRequest): Promise<Response> {
         const decoder = new TextDecoder();
         let buffer = "";
 
+        try {
         while (!done) {
           const { value, done: streamDone } = await reader.read();
           if (streamDone) break;
+
+          // Any upstream activity (including filtered-out subagent events
+          // from the same directory) proves the turn is still alive — re-arm
+          // the idle timer so long fact-checks don't get cut off.
+          armIdleTimeout();
 
           buffer += decoder.decode(value, { stream: true });
 
@@ -347,6 +498,26 @@ export async function POST(req: NextRequest): Promise<Response> {
                   output: part.state?.output,
                   error: part.state?.error,
                 });
+
+                // Attribute file content the agent reads to the Documents
+                // bucket of the context breakdown (not Conversation).
+                if (
+                  part.tool === "read" &&
+                  part.state?.status === "completed" &&
+                  typeof part.state.output === "string" &&
+                  !recordedReads.has(part.id)
+                ) {
+                  recordedReads.add(part.id);
+                  const inp = part.state.input as
+                    | { filePath?: string; path?: string; file?: string }
+                    | undefined;
+                  const pathKey =
+                    inp?.filePath ?? inp?.path ?? inp?.file ?? part.id;
+                  const bytes = part.state.output.length;
+                  void recordReadDocBytes(sessionId, pathKey, bytes).catch(
+                    (e) => console.debug("[stream] recordReadDocBytes failed:", e)
+                  );
+                }
               }
             } else if (type === "todo.updated") {
               const todos = props["todos"] as TodoItem[] | undefined;
@@ -382,8 +553,13 @@ export async function POST(req: NextRequest): Promise<Response> {
           emit({ type: "done" });
           close();
         }
+        } finally {
+          // Always release the upstream reader to avoid resource leaks.
+          reader.cancel().catch(() => {});
+        }
       } catch (err) {
         if (timeoutHandle) clearTimeout(timeoutHandle);
+        upstreamRes?.body?.cancel().catch(() => {});
         const message = err instanceof Error ? err.message : "Internal error";
         try {
           emit({ type: "error", error: message });

@@ -28,5 +28,13 @@ COPY .opencode ./.opencode
 # must live in the runtime image.
 COPY goals ./goals
 EXPOSE 3000
-# TODO(harden): run as non-root (USER node) once /workspaces volume ownership is set.
+
+# Non-root hardening: `node` user is provided by the node:22-slim base image.
+# The /workspaces volume is shared with the `opencode` container (which runs as `bun`).
+# FLAG: volume ownership must be verified after first `docker compose up --build`.
+# If the node user cannot write to /workspaces, add a shared GID or set permissions
+# to 0777 in an init container / entrypoint.
+RUN mkdir -p /workspaces && chown node:node /workspaces
+USER node
+
 CMD ["npm", "run", "start"]

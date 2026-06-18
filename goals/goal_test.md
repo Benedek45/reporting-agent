@@ -4,6 +4,7 @@ title: "Tool self-test (developer mode)"
 agent: compliance
 skill: csrd-esrs
 template: .opencode/skills/csrd-esrs/assets/report-template.md
+dev: true
 ---
 
 This is a DEVELOPER TEST session. Treat the user as a developer. Internal
@@ -18,7 +19,7 @@ Tools to test, in order:
 1. **read** — read `output/report-template.md` (should exist in the workspace).
 2. **write** — write a small temp file `output/_test_tmp.md` with content "test".
 3. **edit** — edit `output/_test_tmp.md` to change "test" to "test-edited".
-4. **list** — list the `uploads/` directory.
+4. **list** — list the `output/` directory.
 5. **glob** — glob `output/*.md`.
 6. **grep** — grep for the string "ESRS" in `output/report-template.md`.
 7. **webfetch** — fetch `https://www.efrag.org/` and confirm you get a response.

@@ -18,6 +18,8 @@ interface FileMenuProps {
   onDeleteDone: () => void;
   /** Called with the file name so the parent can route the ask-delete as a stream action */
   onAskDeleteDone: (fileName: string) => void;
+  /** Called with the file name to open the in-app text editor. */
+  onEdit: (fileName: string) => void;
   onError: (msg: string) => void;
 }
 
@@ -28,6 +30,7 @@ export default function FileMenu({
   onLoadIntoContext,
   onDeleteDone,
   onAskDeleteDone,
+  onEdit,
   onError,
 }: FileMenuProps) {
   const [open, setOpen] = useState(false);
@@ -101,6 +104,11 @@ export default function FileMenu({
     onAskDeleteDone(file.name);
   }
 
+  function handleEdit() {
+    setOpen(false);
+    onEdit(file.name);
+  }
+
   return (
     <div className="file-menu-wrapper" ref={menuRef}>
       <button
@@ -131,6 +139,17 @@ export default function FileMenu({
               ))}
             </div>
           )}
+
+          {/* Edit in-app */}
+          <div className="file-menu-group">
+            <button
+              className="file-menu-item"
+              role="menuitem"
+              onClick={handleEdit}
+            >
+              Edit
+            </button>
+          </div>
 
           {/* Load into context — only for uploads */}
           {file.kind === "upload" && (

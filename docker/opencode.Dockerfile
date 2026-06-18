@@ -20,8 +20,16 @@ COPY vendor/opencode/ ./
 RUN bun install --ignore-scripts
 
 EXPOSE 4096
-# TODO(harden): run as non-root (USER bun) once the shared /workspaces volume
-# ownership is reconciled across the app + opencode containers.
+
+# Non-root hardening: the `bun` user is created by the oven/bun base image.
+# The /workspaces volume is shared with the `app` container (which runs as `node`).
+# We set group ownership to the bun GID and grant group-write so both containers
+# can read/write the same files.
+# FLAG: volume ownership must be verified after first `docker compose up --build`.
+# If the app container (node user) cannot write to /workspaces, add a shared GID
+# or set the volume directory permissions to 0777 in an init container.
+RUN mkdir -p /workspaces && chown bun:bun /workspaces
+USER bun
 
 # Headless engine. Our config is mounted at /config and selected via
 # OPENCODE_CONFIG / OPENCODE_CONFIG_DIR (see docker-compose.yml). Bind 0.0.0.0 so

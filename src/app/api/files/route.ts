@@ -1,7 +1,7 @@
 export const runtime = "nodejs";
 
 import { NextRequest } from "next/server";
-import { listEnvFiles, canDeleteDirectly, deleteUpload } from "@/lib/workspace";
+import { listEnvFiles, canDeleteDirectly, deleteUpload, isSafeName } from "@/lib/workspace";
 import type { EnvFile } from "@/types";
 
 interface FilesResponse {
@@ -53,6 +53,11 @@ export async function DELETE(req: NextRequest): Promise<Response> {
     name = body.name;
   } catch {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  // Reject path-traversal attempts before touching the filesystem.
+  if (!isSafeName(name)) {
+    return Response.json({ error: "Invalid file name" }, { status: 400 });
   }
 
   try {

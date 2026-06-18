@@ -10,6 +10,7 @@ import type {
   ToolEvent,
   ContextBreakdownItem,
   MessageHistoryItem,
+  RoadmapState,
 } from "@/types";
 import DocumentsSidebar from "@/app/_components/DocumentsSidebar";
 import Thinking from "@/app/_components/Thinking";
@@ -19,19 +20,38 @@ import MarkdownMessage from "@/app/_components/MarkdownMessage";
 import ToolActivity from "@/app/_components/ToolActivity";
 import ThemeToggle from "@/app/_components/ThemeToggle";
 import ReportPreview from "@/app/_components/ReportPreview";
+import RoadmapBar from "@/app/_components/RoadmapBar";
+import FileEditorModal from "@/app/_components/FileEditorModal";
+import React from "react";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
+
+interface NotifyPayload {
+  kind: "upload" | "replace" | "edit";
+  files: { name: string; diff?: string }[];
+}
 
 interface UIMessage {
   /** Stable id — from history API or locally generated */
   id: string;
   /** opencode message id (for edit) — only set for history-loaded messages */
   ocId?: string;
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   text: string;
   createdAt: number;
   tools: ToolEvent[];
   pinned: boolean;
+}
+
+/** Short, user-facing label for an out-of-band workspace notification. */
+function notifyBubbleText(n: NotifyPayload): string {
+  const fresh = n.files.filter((f) => !f.diff).map((f) => f.name);
+  const changed = n.files.filter((f) => f.diff).map((f) => f.name);
+  if (n.kind === "edit") return `Edited ${n.files.map((f) => f.name).join(", ")}`;
+  const parts: string[] = [];
+  if (fresh.length) parts.push(`Uploaded ${fresh.join(", ")}`);
+  if (changed.length) parts.push(`Updated ${changed.join(", ")}`);
+  return parts.join(" · ") || "Workspace updated";
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -116,15 +136,60 @@ export default function ChatPage() {
   // Report preview
   const [reportMarkdown, setReportMarkdown] = useState<string | null>(null);
 
+  // Roadmap progress (top bar)
+  const [roadmap, setRoadmap] = useState<RoadmapState | null>(null);
+
+  // In-app file editor
+  const [editingFile, setEditingFile] = useState<string | null>(null);
+
+  // Scrollbar pin dot positions (pct of scrollHeight)
+  const [pinPositions, setPinPositions] = useState<{ id: string; pct: number }[]>([]);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const msgRefs = useRef<Map<string, HTMLDivElement>>(new Map());
   const abortRef = useRef<AbortController | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
+  const chatMessagesRef = useRef<HTMLDivElement>(null);
+  // Out-of-band notification queue + a flag tracking whether a stream is active
+  // (notifications fire as their own turns, queued behind any in-flight turn).
+  const streamingRef = useRef(false);
+  const notifyQueueRef = useRef<NotifyPayload[]>([]);
+  // Ref to the latest runStream so flushNotifyQueue never captures a stale closure.
+  const runStreamRef = useRef<(body: {
+    sessionId: string;
+    text?: string;
+    editMessageId?: string;
+    loadFileName?: string;
+    notify?: NotifyPayload;
+  }) => Promise<void>>(async () => { /* placeholder, replaced after first render */ });
 
   // Auto-scroll to bottom on new messages
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, streamingText]);
+
+  // Recalculate pin dot positions in the scrollbar
+  useEffect(() => {
+    const container = chatMessagesRef.current;
+    if (!container) { setPinPositions([]); return; }
+    const sh = container.scrollHeight;
+    if (sh <= 0) { setPinPositions([]); return; }
+    const containerRect = container.getBoundingClientRect();
+
+    const positions: { id: string; pct: number }[] = [];
+    for (const m of messages) {
+      if (!pinnedIds.has(m.id)) continue;
+      const el = msgRefs.current.get(m.id);
+      if (!el) continue;
+      // Compute true offset relative to the scroll container regardless of
+      // intermediate positioned ancestors.
+      const elRect = el.getBoundingClientRect();
+      const trueTop = elRect.top - containerRect.top + container.scrollTop + el.offsetHeight / 2;
+      const pct = (trueTop / sh) * 100;
+      positions.push({ id: m.id, pct: Math.max(0, Math.min(100, pct)) });
+    }
+    setPinPositions(positions);
+  }, [messages, pinnedIds]);
 
   // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -150,12 +215,14 @@ export default function ChatPage() {
         todos: TodoItem[];
         status: string;
         breakdown?: ContextBreakdownItem[];
+        roadmap?: RoadmapState | null;
       };
       setUsedTokens(data.usedTokens);
       setContextLimit(data.contextLimit);
       setContextPct(data.pct);
       setTodos(data.todos);
       if (data.breakdown) setBreakdown(data.breakdown);
+      if (data.roadmap !== undefined) setRoadmap(data.roadmap);
     } catch {
       // Non-fatal
     }
@@ -177,10 +244,9 @@ export default function ChatPage() {
       const res = await fetch(`/api/session/${encodeURIComponent(sessionId)}/messages`);
       if (!res.ok) return;
       const data = (await res.json()) as { messages: MessageHistoryItem[] };
-      setMessages((prev) => {
-        // Preserve pinned state from existing messages
-        const pinnedMap = new Map(prev.map((m) => [m.id, m.pinned]));
-        return data.messages.map((m) => ({
+      // pinned is derived from pinnedIds at render — no need to carry it here.
+      setMessages(
+        data.messages.map((m) => ({
           id: m.id,
           ocId: m.id,
           role: m.role,
@@ -195,9 +261,9 @@ export default function ChatPage() {
               output: t.output,
             }))
             .filter((t) => t.status !== "error"),
-          pinned: pinnedMap.get(m.id) ?? false,
-        }));
-      });
+          pinned: false, // derived from pinnedIds at render
+        }))
+      );
     } catch {
       // Non-fatal
     }
@@ -286,13 +352,17 @@ export default function ChatPage() {
   }, []);
 
   // ── Core stream function ───────────────────────────────────────────────────
+  // IMPORTANT: callers must set streamingRef.current = true BEFORE calling this
+  // function to prevent the race where two callers both pass the guard check.
 
-  async function runStream(body: {
+  const runStream = useCallback(async (body: {
     sessionId: string;
     text?: string;
     editMessageId?: string;
     loadFileName?: string;
-  }) {
+    notify?: NotifyPayload;
+  }) => {
+    // streamingRef.current is already true — set by the caller before invoking us.
     setBusy(true);
     setStreamingText("");
     setStreamingTools([]);
@@ -301,6 +371,7 @@ export default function ChatPage() {
 
     const controller = new AbortController();
     abortRef.current = controller;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
     try {
       const res = await fetch("/api/chat/stream", {
@@ -315,7 +386,7 @@ export default function ChatPage() {
         throw new Error(errBody.error ?? `Server error ${res.status}`);
       }
 
-      const reader = res.body.getReader();
+      reader = res.body.getReader();
       const decoder = new TextDecoder();
       let sseBuffer = "";
       let accumulatedText = "";
@@ -359,6 +430,10 @@ export default function ChatPage() {
 
             case "todos":
               setTodos(event.todos);
+              break;
+
+            case "roadmap":
+              setRoadmap(event.roadmap);
               break;
 
             case "status":
@@ -421,15 +496,79 @@ export default function ChatPage() {
         ]);
       }
     } catch (err) {
-      if ((err as { name?: string }).name === "AbortError") return;
+      if ((err as { name?: string }).name === "AbortError") {
+        reader?.cancel().catch(() => { /* ignore */ });
+        return;
+      }
       setError(err instanceof Error ? err.message : "Unexpected error");
     } finally {
       setStreamingText(null);
       setStreamingTools([]);
       setReasoningText("");
       setBusy(false);
+      // Reset the streaming flag BEFORE flushing the queue so the next item
+      // can acquire the lock.
+      streamingRef.current = false;
       abortRef.current = null;
+      // A turn just ended — fire the next queued workspace notification, if any.
+      // Use the ref so we always call the latest version of flushNotifyQueue.
+      const next = notifyQueueRef.current.shift();
+      if (next) {
+        // Acquire the lock synchronously before any await.
+        streamingRef.current = true;
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: generateId(),
+            role: "system",
+            text: notifyBubbleText(next),
+            createdAt: Date.now(),
+            tools: [],
+            pinned: false,
+          },
+        ]);
+        void runStreamRef.current({ sessionId: body.sessionId, notify: next });
+      }
     }
+  }, [refreshFiles, refreshState, refreshReport]);
+
+  // Keep the ref in sync with the latest callback so flushNotifyQueue and
+  // enqueueNotify always call the current version.
+  useEffect(() => {
+    runStreamRef.current = runStream;
+  }, [runStream]);
+
+  // ── Out-of-band notifications (upload / edit) ──────────────────────────────
+  // Each fires as its OWN agent turn (not bound to a user prompt). If a turn is
+  // already running, the notification is queued and fired when it completes.
+
+  const flushNotifyQueue = useCallback(() => {
+    // Guard: acquire the lock synchronously. If already streaming, the finally
+    // block in runStream will drain the queue when the current turn ends.
+    if (streamingRef.current) return;
+    const next = notifyQueueRef.current.shift();
+    if (!next) return;
+
+    // Acquire the lock synchronously before any async work.
+    streamingRef.current = true;
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: generateId(),
+        role: "system",
+        text: notifyBubbleText(next),
+        createdAt: Date.now(),
+        tools: [],
+        pinned: false,
+      },
+    ]);
+
+    void runStreamRef.current({ sessionId, notify: next });
+  }, [sessionId]);
+
+  function enqueueNotify(payload: NotifyPayload) {
+    notifyQueueRef.current.push(payload);
+    flushNotifyQueue();
   }
 
   // ── Send ───────────────────────────────────────────────────────────────────
@@ -459,6 +598,8 @@ export default function ChatPage() {
         return updated;
       });
 
+      // Acquire the streaming lock synchronously before any await.
+      streamingRef.current = true;
       await runStream({ sessionId, text, editMessageId: ocId });
 
       // After edit, refetch history to reflect server-side truncation
@@ -477,6 +618,8 @@ export default function ChatPage() {
         },
       ]);
 
+      // Acquire the streaming lock synchronously before any await.
+      streamingRef.current = true;
       await runStream({ sessionId, text });
     }
   }
@@ -501,6 +644,8 @@ export default function ChatPage() {
       ]);
     }
 
+    // Acquire the streaming lock synchronously before any await.
+    streamingRef.current = true;
     await runStream({ sessionId, text: opts.text, loadFileName: opts.loadFileName });
   }
 
@@ -534,6 +679,8 @@ export default function ChatPage() {
   }
 
   // ── Pin ────────────────────────────────────────────────────────────────────
+  // pinnedIds is the single source of truth. message.pinned is derived at render
+  // from pinnedIds so the two can never drift.
 
   function togglePin(id: string) {
     setPinnedIds((prev) => {
@@ -542,9 +689,6 @@ export default function ChatPage() {
       else next.add(id);
       return next;
     });
-    setMessages((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, pinned: !m.pinned } : m))
-    );
   }
 
   function scrollToMessage(id: string) {
@@ -573,10 +717,6 @@ export default function ChatPage() {
     el.style.height = `${Math.min(el.scrollHeight, 160)}px`;
   }, [input]);
 
-  // ── Pinned bar ─────────────────────────────────────────────────────────────
-
-  const pinnedMessages = messages.filter((m) => m.pinned);
-
   // ── Render ─────────────────────────────────────────────────────────────────
 
   return (
@@ -586,7 +726,9 @@ export default function ChatPage() {
         sessionId={sessionId}
         files={files}
         onFilesChanged={() => void refreshFiles()}
-        onStreamAction={(opts) => void handleStreamAction(opts)}
+        onStreamAction={(opts) => handleStreamAction(opts)}
+        onNotify={(payload) => enqueueNotify(payload)}
+        onEditFile={(name) => setEditingFile(name)}
         onError={(msg) => setError(msg)}
       />
 
@@ -602,14 +744,31 @@ export default function ChatPage() {
           </div>
         </div>
 
-        <div className="chat-messages">
+        <RoadmapBar roadmap={roadmap} />
+
+        <div className="chat-messages-wrapper">
+        <div className="chat-messages" ref={chatMessagesRef}>
           {messages.length === 0 && !busy && (
             <p className="status-text">
               The agent will begin the interview once you send your first message.
             </p>
           )}
 
-          {messages.map((msg) => (
+          {messages.map((msg) => {
+            // Derive pinned from the single source of truth (pinnedIds set).
+            const isPinned = pinnedIds.has(msg.id);
+            return msg.role === "system" ? (
+              <div
+                key={msg.id}
+                className="msg-system"
+                ref={(el) => {
+                  if (el) msgRefs.current.set(msg.id, el);
+                  else msgRefs.current.delete(msg.id);
+                }}
+              >
+                {msg.text}
+              </div>
+            ) : (
             <div
               key={msg.id}
               className={`msg-wrapper ${msg.role}`}
@@ -640,12 +799,12 @@ export default function ChatPage() {
                   {formatTime(msg.createdAt)}
                 </span>
                 <button
-                  className={`msg-pin-btn${msg.pinned ? " pinned" : ""}`}
+                  className={`msg-pin-btn${isPinned ? " pinned" : ""}`}
                   onClick={() => togglePin(msg.id)}
-                  title={msg.pinned ? "Unpin" : "Pin message"}
-                  aria-label={msg.pinned ? "Unpin message" : "Pin message"}
+                  title={isPinned ? "Unpin" : "Pin message"}
+                  aria-label={isPinned ? "Unpin message" : "Pin message"}
                 >
-                  {msg.pinned ? "📌" : "📍"}
+                  {isPinned ? "📌" : "📍"}
                 </button>
                 {msg.role === "user" && msg.ocId && (
                   <button
@@ -659,61 +818,45 @@ export default function ChatPage() {
                 )}
               </div>
             </div>
-          ))}
+          );
+          })}
 
-          {/* In-progress streaming bubble */}
-          {streamingText !== null && (
+          {/* In-progress streaming bubble (only when text or tools arrive) */}
+          {streamingText !== null && (streamingText || streamingTools.length > 0) && (
             <div className="msg-wrapper assistant">
               {streamingTools.length > 0 && (
                 <ToolActivity tools={streamingTools} />
               )}
-              <div className="msg assistant msg-streaming">
-                {streamingText ? (
+              {streamingText ? (
+                <div className="msg assistant msg-streaming">
                   <MarkdownMessage content={streamingText} />
-                ) : (
-                  <span className="msg-streaming-cursor" />
-                )}
-              </div>
+                </div>
+              ) : null}
             </div>
           )}
 
-          {/* Thinking indicator (shown when busy but no text yet) */}
+          {/* Thinking indicator — the ONLY bubble while waiting for text */}
           <Thinking active={busy && streamingText === ""} reasoning={reasoningText} />
 
           <div ref={messagesEndRef} />
         </div>
 
-        {/* Pinned messages bar */}
-        {pinnedMessages.length > 0 && (
-          <div className="pinned-bar">
-            <div className="pinned-bar-title">Pinned ({pinnedMessages.length})</div>
-            {pinnedMessages.map((m) => (
-              <div
-                key={m.id}
-                className="pinned-bar-item"
-                onClick={() => scrollToMessage(m.id)}
-                role="button"
-                tabIndex={0}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") scrollToMessage(m.id);
-                }}
-              >
-                <span className="pinned-bar-role">{m.role === "user" ? "You" : "Agent"}</span>
-                <span className="pinned-bar-snippet">
-                  {m.text.slice(0, 80)}{m.text.length > 80 ? "…" : ""}
-                </span>
-                <button
-                  className="pinned-bar-unpin"
-                  onClick={(e) => { e.stopPropagation(); togglePin(m.id); }}
-                  title="Unpin"
-                  aria-label="Unpin message"
-                >
-                  ✕
-                </button>
-              </div>
+        {/* Scrollbar pin dots */}
+        {pinPositions.length > 0 && (
+          <div className="pin-dots-track" aria-hidden="true">
+            {pinPositions.map((p) => (
+              <button
+                key={p.id}
+                className="pin-dot"
+                style={{ top: `${p.pct}%` }}
+                onClick={() => scrollToMessage(p.id)}
+                title="Jump to pinned message"
+                tabIndex={-1}
+              />
             ))}
           </div>
         )}
+        </div>{/* end chat-messages-wrapper */}
 
         {error && <p className="error-text">{error}</p>}
 
@@ -785,6 +928,21 @@ export default function ChatPage() {
         />
         <TodoPanel todos={todos} />
       </aside>
+
+      {/* In-app file editor */}
+      {editingFile && (
+        <FileEditorModal
+          sessionId={sessionId}
+          fileName={editingFile}
+          onClose={() => setEditingFile(null)}
+          onSaved={(name, diff) => {
+            setEditingFile(null);
+            enqueueNotify({ kind: "edit", files: [{ name, diff }] });
+            void refreshFiles();
+          }}
+          onError={(msg) => setError(msg)}
+        />
+      )}
     </div>
   );
 }

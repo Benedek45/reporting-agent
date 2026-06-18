@@ -29,6 +29,16 @@ interface OpenCodeMessageInfo {
   time: {
     created: number;
   };
+  // Present on assistant messages: the per-message token usage for THAT turn.
+  // Unlike the session-level `tokens` (a cumulative lifetime sum), this is the
+  // true context-window occupancy of the latest turn and carries a `total`.
+  tokens?: {
+    total?: number;
+    input?: number;
+    output?: number;
+    reasoning?: number;
+    cache?: { read?: number; write?: number };
+  };
 }
 
 interface OpenCodeMessageResponse {
@@ -93,7 +103,10 @@ interface OpenCodeSessionStatusMap {
   [sessionId: string]: { type: "idle" | "busy" | string };
 }
 
-// In-module cache for the provider context limit
+// In-module cache for the provider context limit.
+// NOTE: This is a process-lifetime cache — it is populated on the first call
+// and never invalidated. If the provider's context limit changes (e.g. after a
+// model update), the app must be restarted to pick up the new value.
 let _cachedContextLimit: number | null = null;
 
 async function request<T>(
@@ -131,6 +144,11 @@ function withDirectory(path: string, directory?: string): string {
 function modelFromId(model: string): OpenCodeModel {
   const separator = model.indexOf("/");
   if (separator === -1) {
+    console.warn(
+      `[opencode] modelFromId: model string "${model}" has no "/" separator — ` +
+        `providerID will be empty, which will likely cause an API error. ` +
+        `Expected format: "providerID/modelID" (e.g. "opencode-go/deepseek-v4-flash").`
+    );
     return { providerID: "", modelID: model };
   }
 
@@ -152,6 +170,46 @@ export async function createSession(
     }
   );
   return { id: session.id };
+}
+
+/**
+ * Minimal shape of the opencode session list response — only the fields the
+ * BFF exposes to the home page. The engine's full `Session.Info` includes
+ * tokens, summary, etc. that we don't surface here.
+ */
+export interface OpenCodeSessionListItem {
+  id: string;
+  title?: string;
+  directory?: string;
+  time: { created: number; updated?: number };
+}
+
+/**
+ * Lists ALL opencode sessions across the engine, sorted by most recently
+ * updated. `?roots=true` includes sessions for which the engine has no
+ * project root registered (i.e. sessions created against an explicit
+ * `?directory=` — our case, since every chat workspace is bound to
+ * `/workspaces/<uuid>` at createSession time).
+ */
+export async function listSessions(): Promise<OpenCodeSessionListItem[]> {
+  return request<OpenCodeSessionListItem[]>("/session?roots=true&limit=200");
+}
+
+/**
+ * Deletes a session in the opencode engine (removes it from the engine's DB
+ * so it no longer appears in `GET /session`). Does NOT touch the workspace
+ * filesystem — the BFF handles that separately.
+ */
+export async function deleteSession(sessionId: string): Promise<void> {
+  const res = await fetch(`${BASE_URL}/session/${encodeURIComponent(sessionId)}`, {
+    method: "DELETE",
+  });
+  if (!res.ok && res.status !== 404) {
+    const errBody = await res.text().catch(() => "(unreadable body)");
+    throw new Error(
+      `OpenCode delete session error ${res.status} ${res.statusText}: ${errBody}`
+    );
+  }
 }
 
 export async function sendMessage(
@@ -260,6 +318,10 @@ export async function getSessionTokens(
 
 /**
  * Returns the full token breakdown for a session.
+ *
+ * WARNING: this is the engine's CUMULATIVE lifetime token sum (a billing
+ * counter that grows every turn). It is NOT the current context-window
+ * occupancy. For the %-context meter use `getLatestContextTokens` instead.
  */
 export async function getSessionTokensDetail(
   sessionId: string
@@ -268,6 +330,61 @@ export async function getSessionTokensDetail(
     `/session/${encodeURIComponent(sessionId)}`
   );
   return detail.tokens;
+}
+
+export interface OpenCodeContextTokens extends OpenCodeTokensDetail {
+  total?: number;
+}
+
+/**
+ * Returns the LATEST assistant message's own token usage — the true current
+ * context-window occupancy of the most recent turn (system + full prior
+ * conversation + documents + this reply). This is bounded by the model's
+ * context window and matches the engine's own overflow/compaction math.
+ *
+ * This replaces reading the session-level cumulative `tokens` (which is a
+ * lifetime sum that grows ~quadratically with turn count).
+ */
+export async function getLatestContextTokens(
+  sessionId: string,
+  directory: string
+): Promise<OpenCodeContextTokens> {
+  const entries = await request<OpenCodeHistoryEntry[]>(
+    withDirectory(
+      `/session/${encodeURIComponent(sessionId)}/message`,
+      directory
+    )
+  );
+
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const info = entries[i]?.info;
+    if (info?.role === "assistant" && info.tokens) {
+      const t = info.tokens;
+      return {
+        total: t.total,
+        input: t.input ?? 0,
+        output: t.output ?? 0,
+        reasoning: t.reasoning ?? 0,
+        cache: { read: t.cache?.read ?? 0, write: t.cache?.write ?? 0 },
+      };
+    }
+  }
+
+  return { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };
+}
+
+/**
+ * Collapses a context-tokens object to a single occupancy number, preferring
+ * the engine-provided `total` and falling back to the component sum.
+ */
+export function contextUsedTokens(t: OpenCodeContextTokens): number {
+  if (typeof t.total === "number" && t.total > 0) return t.total;
+  return (
+    (t.input ?? 0) +
+    (t.output ?? 0) +
+    (t.cache?.read ?? 0) +
+    (t.cache?.write ?? 0)
+  );
 }
 
 /**
@@ -385,7 +502,7 @@ export async function getMessages(
     )
   );
 
-  return entries.map((entry) => {
+  const mapped = entries.map((entry) => {
     const textParts = entry.parts
       .filter((p) => p.type === "text" && typeof p.text === "string")
       .map((p) => p.text as string);
@@ -407,4 +524,22 @@ export async function getMessages(
       tools,
     };
   });
+
+  // The engine emits ONE assistant message per step (read, write, todowrite,
+  // task, …). Merge consecutive assistant messages into a single logical turn
+  // so the UI shows one tool-activity strip + one answer per turn, instead of a
+  // separate bubble/line for every step. User messages are turn boundaries.
+  const merged: MessageHistoryItem[] = [];
+  for (const item of mapped) {
+    const last = merged[merged.length - 1];
+    if (item.role === "assistant" && last && last.role === "assistant") {
+      last.tools = [...last.tools, ...item.tools];
+      if (item.text) {
+        last.text = last.text ? `${last.text}\n\n${item.text}` : item.text;
+      }
+    } else {
+      merged.push({ ...item, tools: [...item.tools] });
+    }
+  }
+  return merged;
 }

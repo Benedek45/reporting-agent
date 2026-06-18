@@ -29,20 +29,60 @@ const WORKSPACE_ROOT = "/workspaces/";
 const DELETE_FILE_TOOL = {
   name: "delete_file",
   description:
-    "Deletes a file from the current report workspace. " +
-    "Use when the user asks to remove an uploaded document. " +
+    "Permanently deletes a file from the current report workspace. " +
+    "WHEN TO USE: only when the user explicitly asks to remove an uploaded document. " +
+    "WHEN NOT TO USE: do not call this speculatively, to 'clean up', or on report.md. " +
+    "SIDE EFFECTS: deletion is irreversible; the file and its Markdown sidecar " +
+    "(<path>.md, if present) are both removed. Any report sections that cited the " +
+    "deleted file must be updated with [DATA NEEDED] placeholders. " +
+    "BEFORE CALLING: use the list tool on output/ to confirm the exact absolute path. " +
+    "Never guess or construct a path — only use a path you have confirmed exists. " +
     "Pass the file's ABSOLUTE path under /workspaces " +
-    "(e.g. /workspaces/<session-id>/uploads/energy.pdf). " +
-    "If a Markdown sidecar (<path>.md) exists it is also deleted. " +
-    "The agent's working directory is the session workspace, so you can " +
-    "list the uploads/ directory to find the exact absolute path before calling this tool.",
+    "(e.g. /workspaces/<session-id>/output/energy.pdf). " +
+    "ERROR RETURN: if the file is not found, returns {error: 'File not found: ...'} " +
+    "with isError=true. If the path is outside /workspaces, the call is refused.",
   inputSchema: {
     type: "object",
     properties: {
       path: {
         type: "string",
         description:
-          "Absolute path under /workspaces, e.g. /workspaces/<id>/uploads/energy.pdf",
+          "Absolute path of the file to delete, strictly under /workspaces. " +
+          "Example: /workspaces/<session-id>/output/energy.pdf. " +
+          "Must be a path you have confirmed exists via the list tool — never invent it.",
+      },
+    },
+    required: ["path"],
+  },
+};
+
+const PRESENT_FILE_TOOL = {
+  name: "present_file",
+  description:
+    "Marks an existing file in the workspace as a finished DELIVERABLE, so it " +
+    "appears under 'Presented' in the user's documents panel. " +
+    "WHEN TO USE: call this after you have written a completed output file that " +
+    "you want the user to see as a deliverable — e.g. a supplementary summary, " +
+    "an export, or a data table. report.md is presented automatically; do not " +
+    "call this for report.md. " +
+    "WHEN NOT TO USE: do not call this for source documents the user uploaded, " +
+    "for scratch/temp files, or for files that are not yet complete. " +
+    "SIDE EFFECTS: appends the file's basename to the .presented marker in the " +
+    "same directory; the UI will reclassify the file as 'Presented'. Idempotent — " +
+    "calling again for the same file is harmless. " +
+    "REQUIREMENT: the file must already exist on disk before you call this. " +
+    "Write the file first, then call present_file. " +
+    "ERROR RETURN: if the file does not exist, returns an error with isError=true. " +
+    "If the path is outside /workspaces, the call is refused.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      path: {
+        type: "string",
+        description:
+          "Absolute path of the already-written deliverable file under /workspaces. " +
+          "Example: /workspaces/<session-id>/output/executive-summary.md. " +
+          "The file must exist before this call.",
       },
     },
     required: ["path"],
@@ -154,6 +194,73 @@ function handleDeleteFile(args) {
   );
 }
 
+function handlePresentFile(args) {
+  const rawPath = args && args.path;
+  if (typeof rawPath !== "string" || rawPath.trim() === "") {
+    return toolResult(
+      textContent(JSON.stringify({ error: "path argument is required and must be a non-empty string" })),
+      true
+    );
+  }
+
+  const resolved = path.resolve(rawPath);
+
+  if (!resolved.startsWith(WORKSPACE_ROOT)) {
+    return toolResult(
+      textContent(
+        JSON.stringify({
+          error: `Refused: path '${resolved}' is outside the allowed workspace root '${WORKSPACE_ROOT}'.`,
+        })
+      ),
+      true
+    );
+  }
+
+  if (!fs.existsSync(resolved)) {
+    return toolResult(
+      textContent(
+        JSON.stringify({ error: `File not found: '${resolved}'. Write the file before presenting it.` })
+      ),
+      true
+    );
+  }
+
+  // The `.presented` marker lives alongside the file (in the same folder the
+  // app reads as <workspace>/output/.presented). It is a newline-delimited
+  // list of presented basenames.
+  const dir = path.dirname(resolved);
+  const base = path.basename(resolved);
+  const markerPath = path.join(dir, ".presented");
+
+  let existing = [];
+  try {
+    existing = fs
+      .readFileSync(markerPath, "utf8")
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+  } catch {
+    // No marker yet
+  }
+
+  if (!existing.includes(base)) {
+    existing.push(base);
+    try {
+      fs.writeFileSync(markerPath, existing.join("\n") + "\n", "utf8");
+    } catch (err) {
+      return toolResult(
+        textContent(JSON.stringify({ error: `Failed to record presented file: ${err.message}` })),
+        true
+      );
+    }
+  }
+
+  return toolResult(
+    textContent(JSON.stringify({ presented: true, name: base })),
+    false
+  );
+}
+
 // ── request dispatcher ───────────────────────────────────────────────────────
 
 function dispatch(msg) {
@@ -173,7 +280,7 @@ function dispatch(msg) {
       break;
 
     case "tools/list":
-      reply(id, { tools: [DELETE_FILE_TOOL] });
+      reply(id, { tools: [DELETE_FILE_TOOL, PRESENT_FILE_TOOL] });
       break;
 
     case "tools/call": {
@@ -182,6 +289,8 @@ function dispatch(msg) {
 
       if (toolName === "delete_file") {
         reply(id, handleDeleteFile(toolArgs));
+      } else if (toolName === "present_file") {
+        reply(id, handlePresentFile(toolArgs));
       } else {
         replyError(id, -32601, `Unknown tool: '${toolName}'`);
       }

@@ -1,0 +1,4 @@
+# Normalize line endings to LF for all text files.
+# Vendor source is pinned as binary-ish to prevent git renormalizing its line endings.
+* text=auto eol=lf
+vendor/opencode/** -text

@@ -2,6 +2,7 @@ export const runtime = "nodejs";
 
 import { NextRequest } from "next/server";
 import { sendMessage } from "@/lib/opencode";
+import { isSafeName } from "@/lib/workspace";
 
 interface AskDeleteResponse {
   reply: string;
@@ -28,6 +29,11 @@ export async function POST(req: NextRequest): Promise<Response> {
     name = body.name;
   } catch {
     return Response.json({ error: "Invalid JSON body" }, { status: 400 });
+  }
+
+  // Reject path-traversal / prompt-injection: name must be a safe basename.
+  if (!isSafeName(name)) {
+    return Response.json({ error: "Invalid file name" }, { status: 400 });
   }
 
   try {

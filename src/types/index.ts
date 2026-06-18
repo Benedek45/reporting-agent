@@ -15,6 +15,10 @@ export interface Goal {
   agent: string;
   skill: string;
   templatePath: string;
+  /** Optional path to the goal's detailed roadmap markdown (frontmatter `roadmap`). */
+  roadmapPath?: string;
+  /** If true, this goal is developer-only and excluded from the dropdown unless SHOW_DEV_GOALS=1. */
+  dev?: boolean;
   body: string;
 }
 
@@ -38,11 +42,15 @@ export interface ChatMessage {
 export interface UploadInfo {
   name: string;
   size: number;
+  /** Byte length of the agent-visible markdown (set by /api/upload). */
+  bytes?: number;
+  /** True when `bytes` exceeds MAX_CONTEXT_FILE_BYTES (set by /api/upload). */
+  tooLargeForFullContext?: boolean;
 }
 
 // ── File listing ──────────────────────────────────────────────────────────────
 
-export type FileKind = "upload" | "report" | "goal";
+export type FileKind = "upload" | "report" | "goal" | "presented";
 export type DownloadFormat = "original" | "md" | "pdf" | "docx";
 
 export interface EnvFile {
@@ -64,8 +72,17 @@ export interface SessionState {
   lastTimeUpdateMs?: number;
   /** Goal body text stored at session creation for first-turn injection. */
   goalText?: string;
+  /** Roadmap body text stored at session creation for first-turn injection. */
+  roadmapText?: string;
   /** Cumulative bytes of files loaded into context via /api/context. */
   loadedContextBytes?: number;
+  /**
+   * Bytes of file content the agent has pulled into context via the `read`
+   * tool, keyed by file path (deduplicated — we keep the largest read seen per
+   * path, so repeated reads of the same file are not double-counted). Powers
+   * the "Documents" slice of the context breakdown.
+   */
+  readDocBytes?: Record<string, number>;
 }
 
 export interface SessionTokenUsage {
@@ -99,6 +116,25 @@ export interface ContextBreakdownItem {
   tokens: number;
 }
 
+// ── Roadmap ───────────────────────────────────────────────────────────────────
+
+export interface RoadmapStep {
+  label: string;
+  done: boolean;
+}
+
+export interface RoadmapSection {
+  title: string;
+  steps: RoadmapStep[];
+}
+
+export interface RoadmapState {
+  sections: RoadmapSection[];
+  totalSteps: number;
+  doneSteps: number;
+  pct: number;
+}
+
 // ── Message history ───────────────────────────────────────────────────────────
 
 export interface MessageHistoryItem {
@@ -121,6 +157,7 @@ export type StreamEvent =
   | { type: "reasoning"; delta: string }
   | ({ type: "tool" } & ToolEvent)
   | { type: "todos"; todos: TodoItem[] }
+  | { type: "roadmap"; roadmap: RoadmapState }
   | { type: "status"; status: string }
   | {
       type: "usage";

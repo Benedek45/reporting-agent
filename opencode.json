@@ -19,7 +19,7 @@
   "permission": {
     "bash": "deny",
     "external_directory": "deny",
-    "edit": "allow",
+    "edit": "deny",
     "webfetch": "allow"
   },
 
@@ -72,6 +72,7 @@
         "external_directory": "deny",
         "webfetch": "allow",
         "websearch": "allow",
+        "question": "deny",
         "skill": { "*": "deny" },
         "task": { "*": "deny" }
       }
@@ -100,13 +101,13 @@
     },
     "doc-ingest": {
       "type": "local",
-      "command": ["node", "mcp/doc-ingest/index.mjs"],
+      "command": ["bun", "run", "/config/mcp/doc-ingest/index.mjs"],
       "enabled": false,
       "timeout": 30000
     },
     "doc-generate": {
       "type": "local",
-      "command": ["node", "mcp/doc-generate/index.mjs"],
+      "command": ["bun", "run", "/config/mcp/doc-generate/index.mjs"],
       "enabled": false,
       "timeout": 30000
     }
