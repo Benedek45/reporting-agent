@@ -27,9 +27,9 @@ docker compose up --build     # → open http://localhost:3000
   (8000) are internal-only.
 - Optional: set `FACTCHECK_API_KEY` (Tavily) to enable the structured fact-check
   MCP; without it the agent falls back to web-fetch.
-- Optional context-pruning plugin (AGPL, opt-in, not bundled):
-  `docker compose -f docker-compose.yml -f docker-compose.dcp.yml up` or
-  `scripts/enable-dcp.*`.
+- Context management: two MIT plugins auto-loaded from `.opencode/plugins/`
+  (`context-manager.js` for per-request cascade + `report-compaction.js` as safety net).
+  No extra config — they auto-discover from the existing `:ro` mount.
 
 ### Rebuild rules (important)
 - Changed **TypeScript / UI** (`src/**`): `docker compose build app && docker compose up -d app`.

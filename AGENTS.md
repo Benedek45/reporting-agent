@@ -48,6 +48,7 @@ The application is a **two-service Docker Compose project**:
   │                ├─ agent: compliance (primary)                  │
   │                ├─ agent: fact-checker (subagent)               │
   │                ├─ skills: csrd-esrs, esg-reporting             │
+  │                ├─ plugin: context-manager (MIT)                  │
   │                ├─ plugin: report-compaction (MIT)              │
   │                └─ MCP: workspace(delete,present) · time · fact-check │
   │  converter     MarkItDown -> Markdown   :8000 (internal, MIT)  │
@@ -277,7 +278,7 @@ docker-compose.yml         the full app: app + opencode + converter + volume
 docker-compose.override.yml  auto-merged DEV overlay: app via `npm run dev` + bind
                            mounts (./src ./goals ./.opencode), engine src bind-mount
                            (persists the EROFS patch) — no-rebuild iteration loop
-docker-compose.dcp.yml     OPT-IN overlay: enable the AGPL DCP plugin (not bundled)
+docker-compose.dcp.yml     DEPRECATED: superseded by our MIT context-manager plugin
 docker/
   opencode.Dockerfile      engine image (vendored opencode, Linux, bun)
   app.Dockerfile           Next.js UI+BFF image (multi-stage build)
@@ -290,7 +291,7 @@ goals/
   goal_environment_qa.md   visible developer/operator goal for environment/tool/workspace Q&A
   goal_test.md             developer-only tool self-test goal (legacy)
   roadmaps/                per-goal detailed checklists (roadmap_csrd_esrs.md, roadmap_esg.md)
-scripts/enable-dcp.{sh,ps1}  one-command opt-in for the AGPL DCP plugin
+scripts/enable-dcp.{sh,ps1}  DEPRECATED: superseded by our MIT context-manager plugin
 opencode.json              opencode runtime config (model, agents, skills, MCP, permissions)
 .env / .env.example        secrets + runtime config (.env is gitignored)
 prompts/
@@ -511,15 +512,21 @@ and picking up stray configs — the original collision cause).
   button (`/api/context`) injects a whole file's markdown into the chat, capped by
   `MAX_CONTEXT_FILE_BYTES` (default 200 000); larger files stay on-demand-only.
 
-- **Context management.** Shipped default (MIT): opencode **native compaction** +
-  `.opencode/plugins/report-compaction.js`, which hooks
-  `experimental.session.compacting` to inject the active goal + report STATUS +
-  every `[DATA NEEDED]` so they survive compaction. **Opt-in, not bundled:** DCP
-  (`@tarquinen/opencode-dcp`, **AGPL-3.0**) via `docker compose -f
-  docker-compose.yml -f docker-compose.dcp.yml up` (or `scripts/enable-dcp.*`).
-  Rationale: DCP loads in-process (a "combined work" with opencode), so we never
-  bundle/convey it — the operator opts in and takes on the AGPL obligations for the
-  service they then run. Our app stays at arm's length over HTTP and MIT-clean.
+- **Context management.** Shipped default (MIT): two plugins auto-discovered from
+  `.opencode/plugins/`:
+  - **`context-manager.js`** — per-request cascade (dedup → stale-error purge →
+    observation mask/offload with a cache-aware Cost-ROI gate) plus a model-driven
+    `compress` tool for structured summarization of closed conversation sections.
+  - **`report-compaction.js`** — hooks `experimental.session.compacting` to inject
+    the active goal + report STATUS + every `[DATA NEEDED]` so they survive
+    opencode native compaction (the last-resort fireguard).
+  The `compress` tool is non-interactive (no `context.ask`) so it cannot deadlock
+  the BFF stream. Plugin state lives in
+  `/workspaces/.context-manager/dcp/<sessionId>.json` (shared volume) and is
+  cleaned up by `deleteSession()`. The clean-room `context-manager.js` was developed
+  in a separate private repo (`Benedek45/context-manager`) from public papers and
+  an ideas-only behavioral spec — no AGPL source was committed; the plugin bundled
+  here is the MIT-clean build output.
 
 ## 8. Per-session workspace isolation
 
@@ -584,7 +591,7 @@ and picking up stray configs — the original collision cause).
 Done: scaffold, vendored opencode, the **containerized app** (app + opencode +
 converter), goal dropdown from `goals/`, automatic document→Markdown conversion on
 upload (MarkItDown), drag-and-drop upload + "load full file into context" (capped),
-the MIT **report-compaction** plugin + the **DCP opt-in** overlay, **SSE streaming
+the MIT **report-compaction** plugin, **SSE streaming
 chat** (thinking animation + timer; reasoning split out of the answer), a live
 **single %-context meter** with approximate breakdown + native **todo panel**, a left
 **Documents** sidebar grouped as Environment vs Output, **PDF/DOCX/MD download &

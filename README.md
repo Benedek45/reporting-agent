@@ -42,17 +42,18 @@ All in `.env` (gitignored):
 | `MAX_CONTEXT_FILE_BYTES` | Cap for the "load full file into context" button | `200000` |
 | `FACTCHECK_API_KEY` | Optional Tavily key for the `fact-check` MCP. If unset, the tool returns `NEEDS_CONFIG` and the agent falls back to web fetch/search. | — |
 
-### Optional: Dynamic Context Pruning (DCP)
+### Context management
 
-The shipped default context management is opencode's native compaction plus the
-MIT `report-compaction` plugin (no AGPL). DCP is a more aggressive alternative,
-licensed **AGPL-3.0**, so it is **not bundled**. To opt in (you accept the AGPL
-obligations for what you then run):
+The app ships with two MIT context-management plugins (`.opencode/plugins/`):
 
-```sh
-docker compose -f docker-compose.yml -f docker-compose.dcp.yml up -d --build
-# or: scripts/enable-dcp.sh   /   scripts/enable-dcp.ps1
-```
+| Plugin | Role |
+|---|---|
+| `context-manager.js` | **Per-request cascade:** dedup → stale-error purge → observation mask/offload (Cost-ROI gated), plus a model-driven `compress` tool for structured summarization. |
+| `report-compaction.js` | **Last-resort safety net:** re-injects goal + STATUS + `[DATA NEEDED]` placeholders when opencode native compaction eventually fires. |
+
+The `compress` tool is non-interactive (no `context.ask`) so it never deadlocks the BFF stream.
+Plugin state lives in `/workspaces/.context-manager/dcp/<sessionId>.json` and is cleaned up on session delete.
+Both plugins are auto-discovered by opencode from the existing `/config/.opencode/plugins/` mount — no extra config needed.
 
 ## Host dev (optional, faster inner loop)
 
