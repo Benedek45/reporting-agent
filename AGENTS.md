@@ -697,17 +697,22 @@ type-clean (zero errors in any edited file):
   this app as `.opencode/plugins/context-manager.js` (single-file Bun ESM bundle; no AGPL
   reference source committed). It auto-loads through opencode's `.opencode/plugins`
   discovery and registers a model-driven `compress` tool plus mechanical context pruning
-  hooks (`experimental.chat.messages.transform`, `experimental.chat.system.transform`,
-  `experimental.text.complete`, events, and `/dcp-compress`). The plugin uses a pure-core
+  hooks (`experimental.chat.messages.transform`, a no-op
+  `experimental.chat.system.transform`, `experimental.text.complete`, events, and
+  `/dcp-compress`). The plugin uses a pure-core
   + adapter architecture: cache-aware Cost-ROI gating, deterministic placeholders,
   observation mask/offload for old tool outputs, stale-error/dedup cleanup, and structured
   append-only summaries. For this app, `compress` is non-interactive (no `context.ask`) so
   it cannot deadlock the BFF stream; it mutates only context-manager sidecar state and the
   outgoing-message projection, not workspace files. State is stored under
   `/workspaces/.context-manager/dcp/<sessionId>.json` so it shares lifecycle with the
-  workspace volume; `deleteSession` removes that sidecar. Verified live: opencode tool list
-  contains `compress`; a streamed turn returned 0 error frames; the sidecar was created in
-  `/workspaces/.context-manager/dcp/` and deleted with the session. The existing
+  workspace volume; `deleteSession` removes that sidecar. The system-transform hook is
+  intentionally no-op in this app: adding a second context-management instruction to the
+  already dynamic reporting-agent system prompt caused empty assistant responses in live
+  smoke tests, while `messages.transform` + `compress` worked correctly. Verified live:
+  opencode tool list contains `compress`; streamed turns return text frames with 0 error
+  frames; the sidecar is created in `/workspaces/.context-manager/dcp/` and deleted with
+  the session. The existing
   `report-compaction.js` remains enabled as the final native-compaction safety net.
 
 **SECURITY FLAG — BFF auth (audit C-1):** every `/api/*` route is currently

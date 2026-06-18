@@ -1589,7 +1589,7 @@ async function DcpPlugin(_input, options) {
   }
   return {
     "experimental.chat.messages.transform": onMessagesTransform,
-    "experimental.chat.system.transform": onSystemTransform,
+    "experimental.chat.system.transform": async () => {},
     "experimental.text.complete": onTextComplete,
     event: onEvent,
     config: onConfig,
