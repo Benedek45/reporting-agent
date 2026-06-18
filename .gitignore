@@ -28,6 +28,12 @@ workspaces/
 .opencode/auth.json
 .opencode/cache/
 
+# Clean-room context-manager work lives in its OWN separate (private) repo,
+# not in the reporting-agent repo. The whole folder is ignored here.
+# (Inside that separate repo, reference-agpl/ is itself git-ignored as the
+# analyst-only AGPL source, so it is never committed anywhere.)
+/dcp-rewrite/
+
 # Logs / OS
 *.log
 npm-debug.log*

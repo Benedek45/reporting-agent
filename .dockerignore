@@ -14,6 +14,9 @@
 workspaces
 ../reporting-agent-workspaces
 
+# Separate clean-room context-manager project — not part of the app image.
+dcp-rewrite
+
 # Host build output / caches in the vendored fork
 vendor/opencode/.turbo
 vendor/opencode/**/dist
