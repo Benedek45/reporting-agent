@@ -77,10 +77,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     // TODO(scaffold): replace the file-backed workspace mapping with durable
     // session persistence once the BFF has a database.
 
-    const welcome =
-      `Hi — I'll help you put together your ${goal.title}. ` +
-      `I'll ask a few questions and request documents as we go. ` +
-      `To get started, tell me about the organisation and reporting period this report should cover.`;
+    const welcome = welcomeForGoal(goal.id, goal.title);
 
     return Response.json({ sessionId, welcome });
   } catch (err) {
@@ -90,6 +87,21 @@ export async function POST(req: NextRequest): Promise<Response> {
       { status: 500 }
     );
   }
+}
+
+function welcomeForGoal(goalId: string, title: string): string {
+  if (goalId === "environment-qa") {
+    return (
+      "Hi - this is an environment Q&A session. Ask me about the current " +
+      "workspace, available tools, MCP servers, files, goals, or how this app is configured."
+    );
+  }
+
+  return (
+    `Hi - I'll help you put together your ${title}. ` +
+    "I'll ask a few questions and request documents as we go. " +
+    "To get started, tell me about the organisation and reporting period this report should cover."
+  );
 }
 
 /**

@@ -62,17 +62,18 @@ export default function GoalPicker({ goals }: GoalPickerProps) {
   }
 
   return (
-    <div className="card">
-      <label htmlFor="goal-select">
-        <strong>Choose a goal</strong>
-      </label>
-      <div style={{ marginTop: "0.75rem" }}>
+    <div className="card goal-card">
+      <div className="home-section-heading">
+        <span>Choose a goal</span>
+        <small>Pick the workflow the agent should run.</small>
+      </div>
+      <div className="goal-picker-row">
         <select
           id="goal-select"
+          className="goal-select"
           value={selectedId}
           onChange={(e) => setSelectedId(e.target.value)}
           disabled={loading}
-          style={{ marginRight: "0.75rem" }}
         >
           {goals.map((g) => (
             <option key={g.id} value={g.id}>
@@ -89,7 +90,7 @@ export default function GoalPicker({ goals }: GoalPickerProps) {
         </button>
       </div>
       {error && (
-        <p className="error-text" style={{ marginTop: "0.75rem" }}>
+        <p className="error-text">
           {error}
         </p>
       )}

@@ -287,6 +287,7 @@ converter/app.py           FastAPI /convert (MarkItDown) + /render (md->PDF/DOCX
 goals/
   goal_csrd_esrs.md        a selectable goal (frontmatter id/title/agent/skill/template/roadmap)
   goal_esg.md
+  goal_environment_qa.md   visible developer/operator goal for environment/tool/workspace Q&A
   goal_test.md             developer-only tool self-test goal (legacy)
   roadmaps/                per-goal detailed checklists (roadmap_csrd_esrs.md, roadmap_esg.md)
 scripts/enable-dcp.{sh,ps1}  one-command opt-in for the AGPL DCP plugin

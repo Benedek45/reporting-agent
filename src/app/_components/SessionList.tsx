@@ -90,8 +90,11 @@ export default function SessionList({ initial }: SessionListProps) {
 
   return (
     <div className="card session-list-card">
-      <div className="session-list-header">
-        <strong>Previous chats</strong>
+      <div className="session-list-header home-section-heading">
+        <div>
+          <span>Previous chats</span>
+          <small>Resume or remove prior workspaces.</small>
+        </div>
         <button
           type="button"
           className="session-list-refresh"
@@ -99,7 +102,7 @@ export default function SessionList({ initial }: SessionListProps) {
           disabled={loading}
           aria-label="Refresh chat list"
         >
-          {loading ? "Refreshing…" : "↻"}
+          {loading ? "Refreshing…" : "Refresh"}
         </button>
       </div>
       {error && <p className="error-text">{error}</p>}
@@ -113,7 +116,7 @@ export default function SessionList({ initial }: SessionListProps) {
               title="Open this chat"
             >
               <div className="session-list-title">
-                {s.title}
+                <span>{s.title}</span>
                 {s.goalHint && (
                   <span className="session-list-goal">{s.goalHint}</span>
                 )}
