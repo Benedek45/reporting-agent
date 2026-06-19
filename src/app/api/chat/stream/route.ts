@@ -51,7 +51,7 @@ const WORKSPACE_GUIDANCE =
 // get cut off. It only fires after genuine silence.
 const IDLE_TIMEOUT_MS = 300_000; // 5 minutes of complete silence
 const MAX_CONTEXT_FILE_BYTES = Number(
-  process.env.MAX_CONTEXT_FILE_BYTES ?? 200_000
+  process.env.MAX_CONTEXT_FILE_BYTES || 200_000
 );
 
 /**

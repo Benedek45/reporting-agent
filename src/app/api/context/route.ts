@@ -34,7 +34,7 @@ export async function POST(req: NextRequest): Promise<Response> {
       return Response.json({ error: "Invalid file name" }, { status: 400 });
     }
 
-    const MAX = Number(process.env.MAX_CONTEXT_FILE_BYTES ?? 200000);
+    const MAX = Number(process.env.MAX_CONTEXT_FILE_BYTES || 200000);
 
     const { markdown, bytes } = await readUploadMarkdown(sessionId, fileName);
 

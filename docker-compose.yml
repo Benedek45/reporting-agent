@@ -63,6 +63,7 @@ services:
       WORKSPACES_ROOT: /workspaces
       NODE_ENV: production
       CONVERTER_URL: http://converter:8000
+      MAX_CONTEXT_FILE_BYTES: "200000"
     ports:
       - "3000:3000" # the only port exposed to the user
     volumes:
