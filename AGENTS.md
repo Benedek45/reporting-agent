@@ -769,22 +769,30 @@ two parallel `general` subagents; live-verified; pushed):
   The first target (**Gemma 4 26B A4B** on g6e.xlarge/L40S 48GB) was blocked by regional
   `InsufficientInstanceCapacity`. The working test endpoint is now **Gemma 4 E4B**
   (`google/gemma-4-E4B-it`, Apache 2.0, 128K context, 8B params / 4.5B effective,
-  native system role + function calling) served by **vLLM** on a **g5.xlarge spot**
-  (1× A10G 24GB VRAM) in `eu-central-1c`. Running instance: `i-0b12afde8444f909e`,
-  public IP `63.179.116.202`, endpoint `http://63.179.116.202:8000/v1`. This instance
-  is **spot and billable**; terminate it when idle. Quota constraint remains: Running
-  On-Demand G and VT vCPU quota = **4.0**; do NOT launch g6e.2xlarge without a quota
-  increase (`aws service-quotas request-service-quota-increase --service-code ec2
+  native system role + function calling) served by **vLLM** on a **g5.xlarge**
+  (1× A10G 24GB VRAM) in `eu-central-1`. **Use ON-DEMAND, not spot.**
+  Spot instances on g5.xlarge were repeatedly reclaimed mid-test (observed 3× in
+  eu-central-1), wasting repeated setup. On-demand avoids this; the instance stays up
+  until explicitly terminated. Running instance: `i-0c8dacd7ef0ba1fcf`,
+  public IP `18.196.82.12`, endpoint `http://18.196.82.12:8000/v1`. Terminate when
+  idle — it is billable (~$1.21/hr). Quota constraint remains: Running On-Demand G
+  and VT vCPU quota = **4.0**; do NOT launch g6e.2xlarge without a quota increase
+  (`aws service-quotas request-service-quota-increase --service-code ec2
   --quota-code L-3819A6DF --desired-value 8`). SSH key is
   `D:\AGI_gent\gemma4-vllm-key.pem` (gitignored). Security group `gemma4-vllm-sg`
-  (sg-0ef072c9e50e1cf42) opens TCP 22 + 8000. vLLM command used:
+  (sg-0ef072c9e50e1cf42) opens TCP 22 + 8000.   vLLM command used:
   ```
   vllm serve google/gemma-4-E4B-it \
     --host 0.0.0.0 --port 8000 \
     --max-model-len 32768 --gpu-memory-utilization 0.90 \
     --reasoning-parser gemma4 --tool-call-parser gemma4 --enable-auto-tool-choice \
+    --chat-template /home/ec2-user/tool_chat_template_gemma4.jinja \
     --api-key $GEMMA_API_KEY
   ```
+  The `--chat-template` flag is **critical** — without it, streaming Gemma tool
+  calls emit raw `<|tool_call>...</|tool_call>` tokens instead of parsed OpenAI
+  tool_calls objects. The template is downloaded from
+  `https://raw.githubusercontent.com/vllm-project/vllm/main/examples/tool_chat_template_gemma4.jinja`.
   `opencode.json` contains a custom `gemma4-aws` provider using
   `@ai-sdk/openai-compatible`, baseURL from `{env:GEMMA_BASE_URL}`, apiKey from
   `{env:GEMMA_API_KEY}`, and model `google/gemma-4-E4B-it` with limit `{context:32768,
