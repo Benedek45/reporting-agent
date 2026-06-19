@@ -34,6 +34,8 @@ services:
       # Secrets: only the two keys the engine actually needs.
       OPENCODE_GO_API_KEY: ${OPENCODE_GO_API_KEY}
       FACTCHECK_API_KEY: ${FACTCHECK_API_KEY:-}
+      GEMMA_API_KEY: ${GEMMA_API_KEY:-}
+      GEMMA_BASE_URL: ${GEMMA_BASE_URL:-}
       # Load OUR config explicitly; do not walk the tree for stray configs.
       OPENCODE_CONFIG: /config/opencode.json
       OPENCODE_CONFIG_DIR: /config/.opencode
@@ -60,6 +62,7 @@ services:
     image: reporting-agent-app:local
     environment:
       OPENCODE_SERVER_URL: http://opencode:4096
+      OPENCODE_MODEL: ${OPENCODE_MODEL:-opencode-go/deepseek-v4-flash}
       WORKSPACES_ROOT: /workspaces
       NODE_ENV: production
       CONVERTER_URL: http://converter:8000

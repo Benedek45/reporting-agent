@@ -6,7 +6,8 @@ const BASE_URL =
   process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096";
 
 const DEFAULT_AGENT = "compliance";
-const DEFAULT_MODEL = "opencode-go/deepseek-v4-flash";
+const DEFAULT_MODEL =
+  process.env.OPENCODE_MODEL ?? "opencode-go/deepseek-v4-flash";
 
 interface OpenCodePart {
   type: string;
@@ -433,8 +434,8 @@ export function computeContextBreakdown(
 }
 
 /**
- * Returns the context window limit for deepseek-v4-flash from the opencode-go
- * provider. Result is cached in-module. Falls back to 128 000 if not found.
+ * Returns the context window limit for the configured app model. Result is
+ * cached in-module. Falls back to 128 000 if not found.
  */
 export async function getProviderContextLimit(): Promise<number> {
   if (_cachedContextLimit !== null) {
@@ -443,8 +444,9 @@ export async function getProviderContextLimit(): Promise<number> {
 
   try {
     const data = await request<OpenCodeProviderList>("/provider");
-    const provider = data.all.find((p) => p.id === "opencode-go");
-    const model = provider?.models["deepseek-v4-flash"];
+    const configured = modelFromId(DEFAULT_MODEL);
+    const provider = data.all.find((p) => p.id === configured.providerID);
+    const model = provider?.models[configured.modelID];
     const limit = model?.limit?.context ?? 128_000;
     _cachedContextLimit = limit;
     return limit;

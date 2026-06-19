@@ -763,12 +763,39 @@ two parallel `general` subagents; live-verified; pushed):
   `docker compose -f docker-compose.yml up -d`. Plain `docker compose up` auto-merges
   `docker-compose.override.yml` → app runs `next dev` → **crashes `EACCES` on `/app/.next/cache`
   + `/app/.next/trace`** (non-root user) → connections drop. `start.ps1` already uses `-f`.
-- **AWS / future model.** AWS CLI **v2** is required for SSO (`C:\Program Files\Amazon\AWSCLIV2\aws.exe`;
-  the v1 at `~/.local/bin/aws.cmd` lacks `aws sso login`); `aws sso login --profile
-  908404960420_PowerUserAccess` works (account 908404960420, region eu-central-1). Future
-  local-model target = **Gemma 4 26B A4B** on an NVIDIA L40S 48GB (256K context, MoE), to be
-  served on AWS; the production model stays `opencode-go/deepseek-v4-flash` until that endpoint
-  exists — do not swap `opencode.json` yet.
+- **AWS / Gemma 4 vLLM endpoint.** AWS CLI **v2** is required for SSO
+  (`C:\Program Files\Amazon\AWSCLIV2\aws.exe`; v1 at `~/.local/bin/aws.cmd` lacks `aws sso login`);
+  `aws sso login --profile 908404960420_PowerUserAccess` works (account 908404960420).
+  The first target (**Gemma 4 26B A4B** on g6e.xlarge/L40S 48GB) was blocked by regional
+  `InsufficientInstanceCapacity`. The working test endpoint is now **Gemma 4 E4B**
+  (`google/gemma-4-E4B-it`, Apache 2.0, 128K context, 8B params / 4.5B effective,
+  native system role + function calling) served by **vLLM** on a **g5.xlarge spot**
+  (1× A10G 24GB VRAM) in `eu-central-1c`. Running instance: `i-0b12afde8444f909e`,
+  public IP `63.179.116.202`, endpoint `http://63.179.116.202:8000/v1`. This instance
+  is **spot and billable**; terminate it when idle. Quota constraint remains: Running
+  On-Demand G and VT vCPU quota = **4.0**; do NOT launch g6e.2xlarge without a quota
+  increase (`aws service-quotas request-service-quota-increase --service-code ec2
+  --quota-code L-3819A6DF --desired-value 8`). SSH key is
+  `D:\AGI_gent\gemma4-vllm-key.pem` (gitignored). Security group `gemma4-vllm-sg`
+  (sg-0ef072c9e50e1cf42) opens TCP 22 + 8000. vLLM command used:
+  ```
+  vllm serve google/gemma-4-E4B-it \
+    --host 0.0.0.0 --port 8000 \
+    --max-model-len 32768 --gpu-memory-utilization 0.90 \
+    --reasoning-parser gemma4 --tool-call-parser gemma4 --enable-auto-tool-choice \
+    --api-key $GEMMA_API_KEY
+  ```
+  `opencode.json` contains a custom `gemma4-aws` provider using
+  `@ai-sdk/openai-compatible`, baseURL from `{env:GEMMA_BASE_URL}`, apiKey from
+  `{env:GEMMA_API_KEY}`, and model `google/gemma-4-E4B-it` with limit `{context:32768,
+  output:8192}`. The verified full model id is `gemma4-aws/google/gemma-4-E4B-it`.
+  Docker Compose injects `GEMMA_API_KEY` and `GEMMA_BASE_URL` only into the `opencode`
+  container; `.env` is gitignored. The BFF/app selects the requested chat model via
+  `OPENCODE_MODEL` (default `opencode-go/deepseek-v4-flash`; set to
+  `gemma4-aws/google/gemma-4-E4B-it` for a browser/UI Gemma test). Verified direct
+  opencode prompt and a `compliance` agent smoke test both returned non-empty Gemma
+  responses. The normal production default remains `opencode-go/deepseek-v4-flash`;
+  Gemma is available for explicit tests until intentionally promoted.
 - **`HANDOFF.md` removed** — `AGENTS.md` is the single source of truth.
 
 **SECURITY FLAG — BFF auth (audit C-1):** every `/api/*` route is currently
