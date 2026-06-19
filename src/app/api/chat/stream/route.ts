@@ -6,6 +6,7 @@ import {
   promptAsync,
   getLatestContextTokens,
   contextUsedTokens,
+  computeContextBreakdown,
   getProviderContextLimit,
   revertSession,
 } from "@/lib/opencode";
@@ -22,7 +23,7 @@ import {
   getAgentsText,
   getGoalText,
 } from "@/lib/workspace";
-import type { StreamEvent, TodoItem, ContextBreakdownItem } from "@/types";
+import type { StreamEvent, TodoItem } from "@/types";
 
 /**
  * Always-on guidance appended to the first turn's system context. Kept here
@@ -364,7 +365,9 @@ export async function POST(req: NextRequest): Promise<Response> {
               Math.round((usedTokens / contextLimit) * 100)
             );
 
-            // Build breakdown (approximate — labeled as such)
+            // Build breakdown (approximate — labeled as such). Clamped to the
+            // real total so a stale cumulative Documents counter can't exceed
+            // usedTokens after the context-manager compresses (see helper doc).
             const reasoningTokens = tokensDetail.reasoning ?? 0;
 
             // Re-read state to get latest document byte counters
@@ -375,19 +378,12 @@ export async function POST(req: NextRequest): Promise<Response> {
             const documentBytes =
               (latestState.loadedContextBytes ?? 0) +
               sumReadDocBytes(latestState);
-            const documentTokens = Math.ceil(documentBytes / 4);
-            const systemBaseline = 6000; // approximate constant
-            const conversationTokens = Math.max(
-              0,
-              usedTokens - reasoningTokens - documentTokens - systemBaseline
-            );
 
-            const breakdown: ContextBreakdownItem[] = [
-              { label: "Reasoning", tokens: reasoningTokens },
-              { label: "Documents", tokens: documentTokens },
-              { label: "System & tools (approx.)", tokens: systemBaseline },
-              { label: "Conversation", tokens: conversationTokens },
-            ];
+            const breakdown = computeContextBreakdown(
+              usedTokens,
+              reasoningTokens,
+              documentBytes
+            );
 
             emit({ type: "usage", usedTokens, contextLimit, pct, breakdown });
           } catch {

@@ -4,6 +4,7 @@ import { NextRequest } from "next/server";
 import {
   getLatestContextTokens,
   contextUsedTokens,
+  computeContextBreakdown,
   getProviderContextLimit,
   getTodos,
   getSessionStatus,
@@ -55,7 +56,9 @@ export async function GET(
 
     const pct = Math.min(100, Math.round((usedTokens / contextLimit) * 100));
 
-    // Build approximate breakdown
+    // Build approximate breakdown (clamped to the real total — see
+    // computeContextBreakdown; prevents stale cumulative Documents counter from
+    // exceeding usedTokens after the context-manager compresses).
     const reasoningTokens = tokensDetail.reasoning ?? 0;
     const state = await readSessionState(sessionId).catch(() => ({
       workspaceId: sessionId,
@@ -66,19 +69,12 @@ export async function GET(
     // Documents = files loaded via the button + files the agent read itself
     const documentBytes =
       (state.loadedContextBytes ?? 0) + sumReadDocBytes(state);
-    const documentTokens = Math.ceil(documentBytes / 4);
-    const systemBaseline = 6000; // approximate constant
-    const conversationTokens = Math.max(
-      0,
-      usedTokens - reasoningTokens - documentTokens - systemBaseline
-    );
 
-    const breakdown: ContextBreakdownItem[] = [
-      { label: "Reasoning", tokens: reasoningTokens },
-      { label: "Documents", tokens: documentTokens },
-      { label: "System & tools (approx.)", tokens: systemBaseline },
-      { label: "Conversation", tokens: conversationTokens },
-    ];
+    const breakdown = computeContextBreakdown(
+      usedTokens,
+      reasoningTokens,
+      documentBytes
+    );
 
     const roadmap = await readRoadmapState(sessionId).catch(() => null);
 

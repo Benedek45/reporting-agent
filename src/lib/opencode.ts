@@ -1,6 +1,6 @@
 // server-only
 
-import type { MessageHistoryItem } from "@/types";
+import type { MessageHistoryItem, ContextBreakdownItem } from "@/types";
 
 const BASE_URL =
   process.env.OPENCODE_SERVER_URL ?? "http://127.0.0.1:4096";
@@ -385,6 +385,51 @@ export function contextUsedTokens(t: OpenCodeContextTokens): number {
     (t.cache?.read ?? 0) +
     (t.cache?.write ?? 0)
   );
+}
+
+const SYSTEM_BASELINE_TOKENS = 6000;
+
+/**
+ * Builds the approximate context breakdown as a CLAMPED WATERFALL so it stays
+ * internally consistent with the real total (`usedTokens`).
+ *
+ * Why a waterfall: `usedTokens` is the true current window occupancy (it drops
+ * when the context-manager compresses). But `documentBytes` is a CUMULATIVE
+ * lifetime counter (every byte the agent ever read/loaded) that does NOT shrink
+ * on compression — so a naive `documentBytes/4` can exceed the whole context
+ * after a compress, producing the nonsensical "Documents > Total". We instead
+ * allocate the known/reliable buckets first (reasoning from the engine, then a
+ * constant system baseline), clamp Documents to whatever budget remains, and
+ * let Conversation be the final remainder. The four buckets therefore always
+ * sum to exactly `usedTokens` and none can exceed it.
+ */
+export function computeContextBreakdown(
+  usedTokens: number,
+  reasoningTokens: number,
+  documentBytes: number
+): ContextBreakdownItem[] {
+  let remaining = Math.max(0, Math.round(usedTokens));
+
+  const reasoning = Math.min(Math.max(0, Math.round(reasoningTokens)), remaining);
+  remaining -= reasoning;
+
+  const system = Math.min(SYSTEM_BASELINE_TOKENS, remaining);
+  remaining -= system;
+
+  const documents = Math.min(
+    Math.max(0, Math.ceil(documentBytes / 4)),
+    remaining
+  );
+  remaining -= documents;
+
+  const conversation = remaining;
+
+  return [
+    { label: "Reasoning", tokens: reasoning },
+    { label: "Documents", tokens: documents },
+    { label: "System & tools (approx.)", tokens: system },
+    { label: "Conversation", tokens: conversation },
+  ];
 }
 
 /**
