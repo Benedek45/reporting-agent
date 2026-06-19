@@ -1,160 +1,7 @@
 // @bun
-var __defProp = Object.defineProperty;
-var __returnValue = (v) => v;
-function __exportSetter(name, newValue) {
-  this[name] = __returnValue.bind(null, newValue);
-}
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, {
-      get: all[name],
-      enumerable: true,
-      configurable: true,
-      set: __exportSetter.bind(all, name)
-    });
-};
-var __esm = (fn, res) => () => (fn && (res = fn(fn = 0)), res);
 var __require = import.meta.require;
 
-// dcp-rewrite/clean-impl/core/compress/apply.ts
-function applyCompress(messages, summaryText, sourceMessageIds, state, config, nowMs) {
-  const blockId = `b${state.nextBlockId}`;
-  state.nextBlockId++;
-  const sourceSet = new Set(sourceMessageIds);
-  const anchorMessageId = sourceMessageIds[0] ?? "";
-  let insertIdx = messages.findIndex((m) => sourceSet.has(m.id));
-  if (insertIdx < 0)
-    insertIdx = messages.length;
-  const shouldConsolidate = !config.summarization.appendOnly || state.fullRestructureTriggered;
-  let finalSummaryText = summaryText;
-  const consumedBlockIds = [];
-  if (shouldConsolidate) {
-    const existingBlocks = [];
-    for (const msgId of sourceMessageIds) {
-      const msg = messages.find((m) => m.id === msgId);
-      if (!msg)
-        continue;
-      for (const part of msg.parts) {
-        if (part.type === "summary-block") {
-          existingBlocks.push(part.text);
-          consumedBlockIds.push(part.blockId);
-          const meta = state.blockRegistry.get(part.blockId);
-          if (meta)
-            meta.consumed = true;
-        }
-      }
-    }
-    if (existingBlocks.length > 0) {
-      finalSummaryText = existingBlocks.join(`
-
----
-
-`) + `
-
----
-
-` + summaryText;
-    }
-  }
-  const summaryPart = {
-    type: "summary-block",
-    blockId,
-    text: finalSummaryText
-  };
-  const summaryMessage = {
-    id: `__summary_${blockId}`,
-    ref: blockId,
-    role: "assistant",
-    sessionId: state.sessionId,
-    createdAt: nowMs,
-    isSummary: true,
-    parts: [summaryPart]
-  };
-  const updatedMessages = messages.map((m) => {
-    if (sourceSet.has(m.id)) {
-      return { ...m, isIgnored: true };
-    }
-    return m;
-  });
-  updatedMessages.splice(insertIdx, 0, summaryMessage);
-  const blockMeta = {
-    blockId,
-    sourceMessageIds,
-    createdAtTurn: state.currentTurn,
-    tokens: Math.ceil(finalSummaryText.length / 4),
-    consumed: false
-  };
-  state.blockRegistry.set(blockId, blockMeta);
-  state.latestSummaryBlockId = blockId;
-  for (const msgId of sourceMessageIds) {
-    const existing = state.messageIndex.get(msgId) ?? {
-      messageId: msgId,
-      masked: false,
-      offloaded: false
-    };
-    state.messageIndex.set(msgId, { ...existing, replacedByBlockId: blockId });
-  }
-  state.activeByAnchorMessageId.set(anchorMessageId, blockId);
-  state.stats.totalCompressRuns++;
-  return { messages: updatedMessages, blockId, anchorMessageId };
-}
-
-// dcp-rewrite/clean-impl/core/compress/execute.ts
-var exports_execute = {};
-__export(exports_execute, {
-  selectCompressRange: () => selectCompressRange,
-  findStableVolatileBoundary: () => findStableVolatileBoundary,
-  executeCompress: () => executeCompress
-});
-function executeCompress(input) {
-  const { messages, sourceMessageIds, summaryText, state, config, nowMs } = input;
-  const sourceSet = new Set(sourceMessageIds);
-  const existing = messages.filter((m) => sourceSet.has(m.id));
-  if (existing.length === 0) {
-    throw new Error(`executeCompress: none of the source message IDs exist in the message list`);
-  }
-  const result = applyCompress(messages, summaryText, sourceMessageIds, state, config, nowMs);
-  return {
-    messages: result.messages,
-    blockId: result.blockId,
-    anchorMessageId: result.anchorMessageId
-  };
-}
-function findStableVolatileBoundary(messages, currentTurn, recencyGuardTurns) {
-  for (let i = messages.length - 1;i >= 0; i--) {
-    const msg = messages[i];
-    if (msg.isIgnored || msg.isSummary)
-      continue;
-    for (const part of msg.parts) {
-      if (part.type === "tool" && part.turn !== undefined) {
-        if (currentTurn - part.turn < recencyGuardTurns) {
-          return i;
-        }
-      }
-    }
-  }
-  return messages.length;
-}
-function selectCompressRange(messages, state, currentTurn, recencyGuardTurns) {
-  const boundary = findStableVolatileBoundary(messages, currentTurn, recencyGuardTurns);
-  let startIdx = 0;
-  for (let i = 0;i < boundary; i++) {
-    if (messages[i].isSummary) {
-      startIdx = i + 1;
-    }
-  }
-  const range = [];
-  for (let i = startIdx;i < boundary; i++) {
-    const msg = messages[i];
-    if (!msg.isIgnored) {
-      range.push(msg.id);
-    }
-  }
-  return range;
-}
-var init_execute = () => {};
-
-// dcp-rewrite/clean-impl/adapters/opencode/map.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/adapters/opencode/map.ts
 function toNeutral(entries) {
   return entries.map((entry, index) => entryToNeutral(entry, index));
 }
@@ -339,12 +186,12 @@ function applyMutationsToEntry(original, neutral) {
   return { info: original.info, parts: newParts };
 }
 
-// dcp-rewrite/clean-impl/adapters/opencode/services.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/adapters/opencode/services.ts
 import { readFile, writeFile, rename, mkdir } from "fs/promises";
 import { join, dirname } from "path";
 import { randomUUID } from "crypto";
 
-// dcp-rewrite/clean-impl/services/tokenizer.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/services/tokenizer.ts
 class CharTokenizer {
   countTokens(text) {
     return Math.ceil(text.length / 4);
@@ -352,7 +199,7 @@ class CharTokenizer {
 }
 var defaultTokenizer = new CharTokenizer;
 
-// dcp-rewrite/clean-impl/services/clock.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/services/clock.ts
 class WallClock {
   now() {
     return Date.now();
@@ -360,7 +207,7 @@ class WallClock {
 }
 var wallClock = new WallClock;
 
-// dcp-rewrite/clean-impl/types/state.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/types/state.ts
 function createInitialState(sessionId) {
   return {
     sessionId,
@@ -372,6 +219,9 @@ function createInitialState(sessionId) {
     activeByAnchorMessageId: new Map,
     nextBlockId: 1,
     nextRunId: 1,
+    dedupDecisions: new Set,
+    staleErrorDecisions: new Set,
+    maskDecisions: new Map,
     toolParameters: new Map,
     toolIdList: [],
     messageIds: {
@@ -387,6 +237,7 @@ function createInitialState(sessionId) {
     },
     lastMaskingPassTurn: 0,
     lastMaskingPassTime: 0,
+    lastPruneCompressRuns: 0,
     lastRequestTime: 0,
     lastCacheMiss: false,
     fullRestructureTriggered: false,
@@ -396,6 +247,7 @@ function createInitialState(sessionId) {
       totalTokensMasked: 0,
       totalTokensOffloaded: 0,
       totalCompressRuns: 0,
+      totalTokensCompressed: 0,
       totalTokensSaved: 0
     },
     modelContextLimit: 1e6,
@@ -406,7 +258,7 @@ function createInitialState(sessionId) {
   };
 }
 
-// dcp-rewrite/clean-impl/adapters/opencode/services.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/adapters/opencode/services.ts
 class AnthropicTokenizer {
   delegate = new CharTokenizer;
   initialized = false;
@@ -511,6 +363,7 @@ function deserializeState(raw) {
       blockRegistry: new Map(raw.blockRegistry),
       messageIndex: new Map(raw.messageIndex),
       activeByAnchorMessageId: new Map(raw.activeByAnchorMessageId),
+      lastPruneCompressRuns: raw.lastPruneCompressRuns ?? 0,
       toolParameters: new Map(raw.toolParameters),
       toolIdList: raw.toolIdList ?? [],
       messageIds: {
@@ -562,7 +415,7 @@ async function loadOrCreateState(sessionId, persistence) {
   return loaded ?? createInitialState(sessionId);
 }
 
-// dcp-rewrite/clean-impl/core/defaults.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/defaults.ts
 var CACHE_MODEL_DEEPSEEK = {
   type: "automatic-free",
   R: 50,
@@ -606,6 +459,11 @@ function buildDefaultConfig(sessionId) {
     clearAtLeast: 2000,
     cacheModel: CACHE_MODEL_DEEPSEEK,
     costRoi: { enabled: true },
+    cachePrune: {
+      afterCompress: true,
+      afterTtl: true,
+      ttlSeconds: 360
+    },
     summarization: { appendOnly: true },
     nudges: {
       lowerThreshold: 150000,
@@ -620,7 +478,7 @@ function buildDefaultConfig(sessionId) {
   };
 }
 
-// dcp-rewrite/clean-impl/core/profiles.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/profiles.ts
 var PROFILES = {
   documents: {
     preferOffload: true,
@@ -645,7 +503,7 @@ function getProfile(name) {
   return PROFILES[name];
 }
 
-// dcp-rewrite/clean-impl/core/config.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/config.ts
 function resolveConfig(sessionId, plugin, global, provider, model, runtime) {
   const base = buildDefaultConfig(sessionId);
   const layers = [plugin, global, provider, model, runtime].filter(Boolean);
@@ -659,6 +517,8 @@ function resolveConfig(sessionId, plugin, global, provider, model, runtime) {
         result.cacheModel = { ...result.cacheModel, ...val };
       } else if (key === "costRoi" && typeof val === "object") {
         result.costRoi = { ...result.costRoi, ...val };
+      } else if (key === "cachePrune" && typeof val === "object") {
+        result.cachePrune = { ...result.cachePrune, ...val };
       } else if (key === "summarization" && typeof val === "object") {
         result.summarization = { ...result.summarization, ...val };
       } else if (key === "nudges" && typeof val === "object") {
@@ -680,7 +540,7 @@ function resolveConfig(sessionId, plugin, global, provider, model, runtime) {
   return result;
 }
 
-// dcp-rewrite/clean-impl/adapters/opencode/config.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/adapters/opencode/config.ts
 function buildCoreConfig(sessionId, options, modelContextLimit, providerID, _modelID) {
   const pluginLayer = {};
   if (options.profile !== undefined) {
@@ -701,17 +561,23 @@ function buildCoreConfig(sessionId, options, modelContextLimit, providerID, _mod
   if (options.costRoi !== undefined) {
     pluginLayer.costRoi = { enabled: options.costRoi.enabled ?? true };
   }
+  if (options.cachePrune !== undefined) {
+    pluginLayer.cachePrune = options.cachePrune;
+  }
   if (options.summarization !== undefined) {
     pluginLayer.summarization = { appendOnly: options.summarization.appendOnly ?? true };
   }
   pluginLayer.modelContextLimit = modelContextLimit;
-  const cacheModel = selectCacheModel(providerID);
-  pluginLayer.cacheModel = cacheModel;
-  const config = resolveConfig(sessionId, pluginLayer);
+  const providerLayer = {
+    cacheModel: selectCacheModel(providerID),
+    ...options.providers?.[providerID] ?? {}
+  };
+  const modelLayer = options.models?.[_modelID];
+  const config = resolveConfig(sessionId, pluginLayer, undefined, providerLayer, modelLayer);
   return config;
 }
 function selectCacheModel(providerID) {
-  if (providerID === "opencode-go" || providerID.includes("deepseek")) {
+  if (typeof providerID === "string" && (providerID === "opencode-go" || providerID.includes("deepseek"))) {
     return CACHE_MODEL_DEEPSEEK;
   }
   return { type: "automatic-free", R: 1, effectiveTtlSeconds: 3600 };
@@ -734,12 +600,162 @@ var INTERNAL_MODEL_SUBSTRINGS = [
   "summary"
 ];
 function isInternalModel(modelID) {
+  if (typeof modelID !== "string")
+    return false;
   const lower = modelID.toLowerCase();
   return INTERNAL_MODEL_SUBSTRINGS.some((s) => lower.includes(s));
 }
 
-// dcp-rewrite/clean-impl/adapters/opencode/tool.ts
-init_execute();
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/compress/apply.ts
+function applyCompress(messages, summaryText, sourceMessageIds, state, config, nowMs) {
+  const blockId = `b${state.nextBlockId}`;
+  state.nextBlockId++;
+  const sourceSet = new Set(sourceMessageIds);
+  const anchorMessageId = sourceMessageIds[0] ?? "";
+  let insertIdx = messages.findIndex((m) => sourceSet.has(m.id));
+  if (insertIdx < 0)
+    insertIdx = messages.length;
+  const shouldConsolidate = !config.summarization.appendOnly || state.fullRestructureTriggered;
+  let finalSummaryText = summaryText;
+  const consumedBlockIds = [];
+  if (shouldConsolidate) {
+    const existingBlocks = [];
+    for (const msgId of sourceMessageIds) {
+      const msg = messages.find((m) => m.id === msgId);
+      if (!msg)
+        continue;
+      for (const part of msg.parts) {
+        if (part.type === "summary-block") {
+          existingBlocks.push(part.text);
+          consumedBlockIds.push(part.blockId);
+          const meta = state.blockRegistry.get(part.blockId);
+          if (meta)
+            meta.consumed = true;
+        }
+      }
+    }
+    if (existingBlocks.length > 0) {
+      finalSummaryText = existingBlocks.join(`
+
+---
+
+`) + `
+
+---
+
+` + summaryText;
+    }
+  }
+  const summaryPart = {
+    type: "summary-block",
+    blockId,
+    text: finalSummaryText
+  };
+  const summaryMessage = {
+    id: `__summary_${blockId}`,
+    ref: blockId,
+    role: "assistant",
+    sessionId: state.sessionId,
+    createdAt: nowMs,
+    isSummary: true,
+    parts: [summaryPart]
+  };
+  const updatedMessages = messages.map((m) => {
+    if (sourceSet.has(m.id)) {
+      return { ...m, isIgnored: true };
+    }
+    return m;
+  });
+  updatedMessages.splice(insertIdx, 0, summaryMessage);
+  const blockMeta = {
+    blockId,
+    sourceMessageIds,
+    createdAtTurn: state.currentTurn,
+    tokens: Math.ceil(finalSummaryText.length / 4),
+    consumed: false,
+    summaryText: finalSummaryText
+  };
+  state.blockRegistry.set(blockId, blockMeta);
+  state.latestSummaryBlockId = blockId;
+  for (const msgId of sourceMessageIds) {
+    const existing = state.messageIndex.get(msgId) ?? {
+      messageId: msgId,
+      masked: false,
+      offloaded: false
+    };
+    state.messageIndex.set(msgId, { ...existing, replacedByBlockId: blockId });
+  }
+  state.activeByAnchorMessageId.set(anchorMessageId, blockId);
+  let sourceChars = 0;
+  for (const msgId of sourceMessageIds) {
+    const msg = messages.find((m) => m.id === msgId);
+    if (!msg)
+      continue;
+    for (const part of msg.parts) {
+      if (part.type === "text" || part.type === "reasoning" || part.type === "summary-block") {
+        sourceChars += part.text.length;
+      } else if (part.type === "tool") {
+        const inputStr = typeof part.input === "string" ? part.input : JSON.stringify(part.input);
+        sourceChars += inputStr.length + (part.output?.length ?? 0);
+      }
+    }
+  }
+  const savedByCompress = Math.max(0, Math.ceil(sourceChars / 4) - blockMeta.tokens);
+  state.stats.totalCompressRuns++;
+  state.stats.totalTokensCompressed += savedByCompress;
+  state.stats.totalTokensSaved += savedByCompress;
+  return { messages: updatedMessages, blockId, anchorMessageId };
+}
+
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/compress/execute.ts
+function executeCompress(input) {
+  const { messages, sourceMessageIds, summaryText, state, config, nowMs } = input;
+  const sourceSet = new Set(sourceMessageIds);
+  const existing = messages.filter((m) => sourceSet.has(m.id));
+  if (existing.length === 0) {
+    throw new Error(`executeCompress: none of the source message IDs exist in the message list`);
+  }
+  const result = applyCompress(messages, summaryText, sourceMessageIds, state, config, nowMs);
+  return {
+    messages: result.messages,
+    blockId: result.blockId,
+    anchorMessageId: result.anchorMessageId
+  };
+}
+function findStableVolatileBoundary(messages, currentTurn, recencyGuardTurns) {
+  for (let i = messages.length - 1;i >= 0; i--) {
+    const msg = messages[i];
+    if (msg.isIgnored || msg.isSummary)
+      continue;
+    for (const part of msg.parts) {
+      if (part.type === "tool" && part.turn !== undefined) {
+        if (currentTurn - part.turn < recencyGuardTurns) {
+          return i;
+        }
+      }
+    }
+  }
+  return messages.length;
+}
+function selectCompressRange(messages, state, currentTurn, recencyGuardTurns) {
+  const boundary = findStableVolatileBoundary(messages, currentTurn, recencyGuardTurns);
+  let startIdx = 0;
+  for (let i = 0;i < boundary; i++) {
+    if (messages[i].isSummary) {
+      startIdx = i + 1;
+    }
+  }
+  const range = [];
+  for (let i = startIdx;i < boundary; i++) {
+    const msg = messages[i];
+    if (!msg.isIgnored) {
+      range.push(msg.id);
+    }
+  }
+  return range;
+}
+
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/adapters/opencode/tool.ts
 var compressArgsSchema = {
   topic: {
     type: "string",
@@ -881,10 +897,14 @@ RULES:
 SIDE EFFECTS: The compressed messages are replaced with a summary block in the context. This is irreversible per-session (the originals are preserved in the engine's store).`;
 }
 
-// dcp-rewrite/clean-impl/core/tagging.ts
-var HALLUCINATION_STRIP_RE = /(<dcp-message-id(?:\s[^>]*)?>)[\s\S]*?(<\/dcp-message-id>)/gi;
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/adapters/opencode/plugin.ts
+import { join as join2 } from "path";
+import { tmpdir } from "os";
+
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/tagging.ts
+var TAG_STRIP_RE = /<dcp-message-id\b[^>]*>[\s\S]*?<\/dcp-message-id>\n?/gi;
 function stripHallucinatedTags(text) {
-  return text.replace(HALLUCINATION_STRIP_RE, "");
+  return text.replace(TAG_STRIP_RE, "");
 }
 function formatRef(n) {
   return `m${String(n).padStart(4, "0")}`;
@@ -892,7 +912,9 @@ function formatRef(n) {
 function runTagging(messages, state) {
   return messages.map((msg) => {
     if (state.messageIds.byRawId.has(msg.id)) {
-      return stripMessageTags(msg);
+      const ref2 = state.messageIds.byRawId.get(msg.id);
+      const synced = ref2 && msg.ref !== ref2 ? { ...msg, ref: ref2 } : msg;
+      return stripMessageTags(synced);
     }
     const ref = formatRef(state.messageIds.nextRef);
     state.messageIds.nextRef++;
@@ -919,7 +941,7 @@ function stripMessageTags(msg) {
   return { ...msg, parts: newParts };
 }
 
-// dcp-rewrite/clean-impl/core/tokens.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/tokens.ts
 function estimatePartTokens(part, tokenizer) {
   switch (part.type) {
     case "text":
@@ -948,6 +970,15 @@ function estimateMessageTokens(msg, tokenizer) {
 function estimateContextTokens(messages, tokenizer) {
   return messages.filter((m) => !m.isIgnored).reduce((sum, m) => sum + estimateMessageTokens(m, tokenizer), 0);
 }
+function resolveThreshold(value, modelContextLimit) {
+  if (typeof value === "number")
+    return value;
+  const match = value.match(/^(\d+(?:\.\d+)?)%$/);
+  if (match)
+    return Math.floor(modelContextLimit * parseFloat(match[1]) / 100);
+  const n = Number(value);
+  return Number.isFinite(n) ? n : Number.POSITIVE_INFINITY;
+}
 function parseSafetyCapFraction(safetyCap) {
   const match = safetyCap.match(/^(\d+(?:\.\d+)?)%$/);
   if (!match)
@@ -960,7 +991,7 @@ function computeEffectiveBudget(modelContextLimit, safetyCap, systemPromptTokens
   return Math.max(1000, cap - systemPromptTokens);
 }
 
-// dcp-rewrite/clean-impl/core/budget.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/budget.ts
 function computeBudgetBreakdown(messages, config, tokenizer) {
   let documents = 0;
   let reasoning = 0;
@@ -994,17 +1025,17 @@ function computeBudgetBreakdown(messages, config, tokenizer) {
   return { systemAndTools, documents, reasoning, conversation, total, effectiveBudget, usedFraction };
 }
 function shouldTriggerMasking(totalTokens, config) {
-  return totalTokens >= config.nudges.maskTriggerThreshold;
+  return totalTokens >= resolveThreshold(config.nudges.maskTriggerThreshold, config.modelContextLimit);
 }
 
-// dcp-rewrite/clean-impl/core/placeholders.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/placeholders.ts
 var PLACEHOLDER_DEDUP = "[Output removed to save context - information superseded or no longer needed]";
 var PLACEHOLDER_STALE_ERROR_INPUT = "[input removed due to failed tool call]";
 var PLACEHOLDER_PLAIN_MASK = "[Tool output masked to save context \u2014 older than the recency window. The tool call and its inputs are preserved; re-run the tool if this output is needed again.]";
 function buildOffloadPointer(path, previewLines, preview) {
   return `[Large tool output offloaded to save context. Source: ${path}. ` + `Preview (first ${previewLines} lines):
 ${preview}
-` + `\u2026(truncated; re-read "${path}" to load the full content).]`;
+` + `\u2026(truncated; use the read tool on "${path}" to load the full content if you need it again).]`;
 }
 function buildStatefulMask(exitCode, summary, tailLines, tail) {
   return `[Stateful tool output condensed to save context. Exit code: ${exitCode}. ${summary}.
@@ -1013,7 +1044,7 @@ ${tail}
 ` + `\u2026(full output not re-fetchable; re-run the tool if needed).]`;
 }
 
-// dcp-rewrite/clean-impl/core/glob.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/glob.ts
 function matchesGlob(toolName, pattern) {
   const name = toolName.toLowerCase();
   const pat = pattern.toLowerCase();
@@ -1058,7 +1089,7 @@ function findToolClassKey(toolName, toolClasses) {
   return;
 }
 
-// dcp-rewrite/clean-impl/core/strategies/guards.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/strategies/guards.ts
 function isAlwaysProtected(toolName) {
   return ALWAYS_PROTECTED_TOOLS.has(toolName);
 }
@@ -1098,12 +1129,12 @@ function collectEligibleToolParts(messages, currentTurn, config) {
   return eligible;
 }
 
-// dcp-rewrite/clean-impl/core/strategies/dedup.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/strategies/dedup.ts
 function toolCallKey(toolPart) {
   const inputStr = typeof toolPart.input === "string" ? toolPart.input : JSON.stringify(toolPart.input);
   return `${toolPart.tool}::${inputStr}`;
 }
-function runDedup(messages, currentTurn, config, _state) {
+function runDedup(messages, currentTurn, config, state) {
   const lastOccurrence = new Map;
   for (let mi = 0;mi < messages.length; mi++) {
     const msg = messages[mi];
@@ -1143,8 +1174,12 @@ function runDedup(messages, currentTurn, config, _state) {
       if (!last)
         return part;
       if (last.msgIdx !== mi || last.partIdx !== pi) {
-        const savedTokens = (part.output?.length ?? 0) / 4;
-        tokensSaved += savedTokens;
+        const isNew = !state.dedupDecisions.has(part.callId);
+        if (isNew) {
+          const savedTokens = (part.output?.length ?? 0) / 4;
+          tokensSaved += savedTokens;
+          state.dedupDecisions.add(part.callId);
+        }
         dedupCount++;
         modified = true;
         return { ...part, output: PLACEHOLDER_DEDUP };
@@ -1158,9 +1193,9 @@ function runDedup(messages, currentTurn, config, _state) {
   return { messages: result, dedupCount, tokensSaved };
 }
 
-// dcp-rewrite/clean-impl/core/strategies/staleError.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/strategies/staleError.ts
 var DEFAULT_STALE_ERROR_TURNS = 3;
-function runStaleError(messages, currentTurn, config, _state) {
+function runStaleError(messages, currentTurn, config, state) {
   const staleAfterTurns = DEFAULT_STALE_ERROR_TURNS;
   let purgedCount = 0;
   let tokensSaved = 0;
@@ -1182,8 +1217,12 @@ function runStaleError(messages, currentTurn, config, _state) {
       if (part.input === PLACEHOLDER_STALE_ERROR_INPUT)
         return part;
       const inputStr = typeof part.input === "string" ? part.input : JSON.stringify(part.input);
-      const savedTokens = inputStr.length / 4;
-      tokensSaved += savedTokens;
+      const isNew = !state.staleErrorDecisions.has(part.callId);
+      if (isNew) {
+        const savedTokens = inputStr.length / 4;
+        tokensSaved += savedTokens;
+        state.staleErrorDecisions.add(part.callId);
+      }
       purgedCount++;
       modified = true;
       return { ...part, input: PLACEHOLDER_STALE_ERROR_INPUT };
@@ -1195,7 +1234,7 @@ function runStaleError(messages, currentTurn, config, _state) {
   return { messages: result, purgedCount, tokensSaved };
 }
 
-// dcp-rewrite/clean-impl/core/paths.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/paths.ts
 function buildOffloadPath(workspaceDir, sessionId, callId) {
   return `${workspaceDir}/.context-offload/${sessionId}/${callId}.txt`;
 }
@@ -1212,7 +1251,89 @@ function extractTailLines(text, n) {
 `);
 }
 
-// dcp-rewrite/clean-impl/core/strategies/observationMask.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/budget/costRoi.ts
+function evaluateCostRoi(input) {
+  const { nSaved, eTurns, nAfter, cacheModel, isColdCache, isQualityTrigger, enabled, clearAtLeast } = input;
+  const R = cacheModel.R;
+  if (!enabled) {
+    return { shouldPrune: true, reason: "cost-roi disabled" };
+  }
+  if (nSaved < clearAtLeast) {
+    return { shouldPrune: false, reason: `nSaved (${nSaved}) < clearAtLeast (${clearAtLeast})` };
+  }
+  if (R <= 1) {
+    return { shouldPrune: true, reason: "R=1: no cache benefit to protect" };
+  }
+  if (isColdCache) {
+    return { shouldPrune: true, reason: "cold cache: penalty term 0" };
+  }
+  if (isQualityTrigger) {
+    return { shouldPrune: true, reason: "quality trigger: activeTokens > upperThreshold" };
+  }
+  const lhs = nSaved * eTurns;
+  const rhs = (R - 1) * nAfter;
+  if (lhs > rhs) {
+    return { shouldPrune: true, reason: `formula: ${lhs} > ${rhs}` };
+  }
+  return {
+    shouldPrune: false,
+    reason: `formula: ${lhs} <= ${rhs} (N_saved=${nSaved}, E_turns=${eTurns}, R=${R}, N_after=${nAfter})`
+  };
+}
+function cachePruneAllowed(config, state, nowMs, activeTokens, candidateSavings) {
+  if (!config.costRoi.enabled)
+    return true;
+  if (config.cacheModel.R <= 1)
+    return true;
+  if (state.lastRequestTime === 0)
+    return true;
+  if (state.lastCacheMiss)
+    return true;
+  if (config.cachePrune.afterCompress && state.stats.totalCompressRuns > (state.lastPruneCompressRuns ?? 0))
+    return true;
+  if (config.cachePrune.afterTtl && isIdlePastTtl(state.lastRequestTime, nowMs, config.cachePrune.ttlSeconds))
+    return true;
+  if (activeTokens > resolveThreshold(config.nudges.upperThreshold, config.modelContextLimit))
+    return true;
+  if (candidateSavings !== undefined && candidateSavings > 0) {
+    const nAfter = Math.max(0, activeTokens - candidateSavings);
+    const roi = evaluateCostRoi(buildCostRoiInput(candidateSavings, nAfter, activeTokens, config, nowMs, state.lastRequestTime, state.lastCacheMiss));
+    if (roi.shouldPrune)
+      return true;
+  }
+  return false;
+}
+function isIdlePastTtl(lastRequestTimeMs, nowMs, ttlSeconds) {
+  if (ttlSeconds <= 0)
+    return false;
+  return (nowMs - lastRequestTimeMs) / 1000 > ttlSeconds;
+}
+function isColdCache(lastRequestTimeMs, nowMs, cacheModel, lastCacheMiss) {
+  if (lastCacheMiss)
+    return true;
+  if (lastRequestTimeMs === 0)
+    return true;
+  const idleSeconds = (nowMs - lastRequestTimeMs) / 1000;
+  return idleSeconds > cacheModel.effectiveTtlSeconds;
+}
+function buildCostRoiInput(nSaved, nAfter, activeTokens, config, nowMs, lastRequestTimeMs, lastCacheMiss) {
+  const cold = isColdCache(lastRequestTimeMs, nowMs, config.cacheModel, lastCacheMiss);
+  const qualityTrigger = activeTokens > resolveThreshold(config.nudges.upperThreshold, config.modelContextLimit);
+  const eTurns = 5;
+  return {
+    nSaved,
+    eTurns,
+    nAfter,
+    activeTokens,
+    cacheModel: config.cacheModel,
+    isColdCache: cold,
+    isQualityTrigger: qualityTrigger,
+    enabled: config.costRoi.enabled,
+    clearAtLeast: config.clearAtLeast
+  };
+}
+
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/strategies/observationMask.ts
 var OFFLOAD_PREVIEW_LINES = 10;
 var STATEFUL_TAIL_LINES = 20;
 var OFFLOAD_MIN_CHARS = 2000;
@@ -1240,7 +1361,14 @@ function buildPassFailSummary(output) {
   }
   return "See tail for details";
 }
-function runObservationMask(messages, currentTurn, config, state, workspaceDir) {
+function runObservationMask(messages, currentTurn, config, state, workspaceDir, tokenizer = defaultTokenizer, nowMs = 0) {
+  const empty = {
+    messages,
+    maskedCount: 0,
+    offloadedCount: 0,
+    tokensSaved: 0,
+    offloadRequests: []
+  };
   const profile = getProfile(config.profile ?? state.activeProfile ?? "documents");
   const eligible = collectEligibleToolParts(messages, currentTurn, config);
   let totalRecoverable = 0;
@@ -1248,13 +1376,19 @@ function runObservationMask(messages, currentTurn, config, state, workspaceDir) 
     const entry = state.messageIndex.get(toolPart.callId);
     if (entry?.masked || entry?.offloaded)
       continue;
-    totalRecoverable += (toolPart.output?.length ?? 0) / 4;
+    totalRecoverable += tokenizer.countTokens(toolPart.output ?? "");
   }
   if (totalRecoverable < config.clearAtLeast) {
-    return { messages, maskedCount: 0, offloadedCount: 0, tokensSaved: 0, offloadRequests: [] };
+    return empty;
   }
   if (state.lastMaskingPassTurn > 0 && currentTurn - state.lastMaskingPassTurn < config.minRepruneInterval) {
-    return { messages, maskedCount: 0, offloadedCount: 0, tokensSaved: 0, offloadRequests: [] };
+    return empty;
+  }
+  const activeTokens = estimateContextTokens(messages, tokenizer);
+  const nAfter = Math.max(0, activeTokens - totalRecoverable);
+  const roi = evaluateCostRoi(buildCostRoiInput(totalRecoverable, nAfter, activeTokens, config, nowMs, state.lastRequestTime, state.lastCacheMiss));
+  if (!roi.shouldPrune) {
+    return empty;
   }
   const msgMap = new Map;
   const result = messages.map((m) => {
@@ -1265,6 +1399,8 @@ function runObservationMask(messages, currentTurn, config, state, workspaceDir) 
   let maskedCount = 0;
   let offloadedCount = 0;
   let tokensSaved = 0;
+  let maskedTokens = 0;
+  let offloadedTokens = 0;
   const offloadRequests = [];
   for (const { messageId, partIndex, toolPart } of eligible) {
     const entry = state.messageIndex.get(toolPart.callId);
@@ -1274,7 +1410,7 @@ function runObservationMask(messages, currentTurn, config, state, workspaceDir) 
     if (!output)
       continue;
     const stateless = isStateless(toolPart.tool, config);
-    const outputTokens = output.length / 4;
+    const outputTokens = tokenizer.countTokens(output);
     const msg = msgMap.get(messageId);
     if (!msg)
       continue;
@@ -1286,19 +1422,23 @@ function runObservationMask(messages, currentTurn, config, state, workspaceDir) 
       newPart = { ...toolPart, output: pointer, sourcePath: path };
       offloadRequests.push({ path, content: output });
       offloadedCount++;
+      offloadedTokens += outputTokens;
       state.messageIndex.set(toolPart.callId, {
         ...entry ?? { messageId, masked: false },
         offloaded: true,
         offloadPath: path
       });
+      state.maskDecisions.set(toolPart.callId, pointer);
     } else if (stateless || profile.usePlainMaskForStateful) {
       newPart = { ...toolPart, output: PLACEHOLDER_PLAIN_MASK };
       maskedCount++;
+      maskedTokens += outputTokens;
       state.messageIndex.set(toolPart.callId, {
         ...entry ?? { messageId, offloaded: false },
         masked: true,
         maskedAt: currentTurn
       });
+      state.maskDecisions.set(toolPart.callId, PLACEHOLDER_PLAIN_MASK);
     } else {
       const exitCode = extractExitCode(output);
       const summary = buildPassFailSummary(output);
@@ -1306,41 +1446,52 @@ function runObservationMask(messages, currentTurn, config, state, workspaceDir) 
       const mask = buildStatefulMask(exitCode, summary, STATEFUL_TAIL_LINES, tail);
       newPart = { ...toolPart, output: mask };
       maskedCount++;
+      maskedTokens += outputTokens;
       state.messageIndex.set(toolPart.callId, {
         ...entry ?? { messageId, offloaded: false },
         masked: true,
         maskedAt: currentTurn
       });
+      state.maskDecisions.set(toolPart.callId, mask);
     }
     msg.parts[partIndex] = newPart;
     tokensSaved += outputTokens;
   }
   if (maskedCount > 0 || offloadedCount > 0) {
     state.lastMaskingPassTurn = currentTurn;
-    state.lastMaskingPassTime = Date.now();
+    state.lastMaskingPassTime = nowMs;
     state.stats.totalMaskingPasses++;
-    state.stats.totalTokensMasked += maskedCount;
-    state.stats.totalTokensOffloaded += offloadedCount;
+    state.stats.totalTokensMasked += maskedTokens;
+    state.stats.totalTokensOffloaded += offloadedTokens;
   }
   return { messages: result, maskedCount, offloadedCount, tokensSaved, offloadRequests };
 }
 
-// dcp-rewrite/clean-impl/core/cascade.ts
-function runCascade(messages, currentTurn, config, state, tokenizer, workspaceDir) {
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/cascade.ts
+function runCascade(messages, currentTurn, config, state, tokenizer, workspaceDir, nowMs = 0) {
   let current = messages;
   let totalSaved = 0;
-  const dedupResult = runDedup(current, currentTurn, config, state);
-  current = dedupResult.messages;
-  totalSaved += dedupResult.tokensSaved;
-  const staleResult = runStaleError(current, currentTurn, config, state);
-  current = staleResult.messages;
-  totalSaved += staleResult.tokensSaved;
+  let dedupCount = 0;
+  let staleErrorCount = 0;
+  const preTokens = estimateContextTokens(current, tokenizer);
+  const candidateSavings = estimateDedupStaleSavings(current, currentTurn, config, state);
+  if (cachePruneAllowed(config, state, nowMs, preTokens, candidateSavings)) {
+    const dedupResult = runDedup(current, currentTurn, config, state);
+    current = dedupResult.messages;
+    totalSaved += dedupResult.tokensSaved;
+    dedupCount = dedupResult.dedupCount;
+    const staleResult = runStaleError(current, currentTurn, config, state);
+    current = staleResult.messages;
+    totalSaved += staleResult.tokensSaved;
+    staleErrorCount = staleResult.purgedCount;
+    state.lastPruneCompressRuns = state.stats.totalCompressRuns;
+  }
   const currentTokens = estimateContextTokens(current, tokenizer);
   let maskedCount = 0;
   let offloadedCount = 0;
   let offloadRequests = [];
   if (shouldTriggerMasking(currentTokens, config)) {
-    const maskResult = runObservationMask(current, currentTurn, config, state, workspaceDir);
+    const maskResult = runObservationMask(current, currentTurn, config, state, workspaceDir, tokenizer, nowMs);
     current = maskResult.messages;
     totalSaved += maskResult.tokensSaved;
     maskedCount = maskResult.maskedCount;
@@ -1350,37 +1501,215 @@ function runCascade(messages, currentTurn, config, state, tokenizer, workspaceDi
   return {
     messages: current,
     tokensSaved: totalSaved,
-    dedupCount: dedupResult.dedupCount,
-    staleErrorCount: staleResult.purgedCount,
+    dedupCount,
+    staleErrorCount,
     maskedCount,
     offloadedCount,
     offloadRequests
   };
 }
-
-// dcp-rewrite/clean-impl/core/nudges.ts
-function getNudgeLevel(totalTokens, config) {
-  const { midSoftNudge, upperThreshold, safetyCap, maskTriggerThreshold } = config.nudges;
-  const safetyCapTokens = parseSafetyCapTokens(safetyCap, config.modelContextLimit);
-  if (totalTokens >= safetyCapTokens)
-    return "safety-cap";
-  if (totalTokens >= upperThreshold)
-    return "upper";
-  if (totalTokens >= midSoftNudge)
-    return "mid-soft";
-  return "none";
+function estimateDedupStaleSavings(messages, currentTurn, config, state) {
+  let estimated = 0;
+  const lastOccurrence = new Map;
+  for (let mi = 0;mi < messages.length; mi++) {
+    const msg = messages[mi];
+    if (msg.isIgnored)
+      continue;
+    for (let pi = 0;pi < msg.parts.length; pi++) {
+      const part = msg.parts[pi];
+      if (part.type !== "tool")
+        continue;
+      const tp = part;
+      if (tp.status !== "completed")
+        continue;
+      if (isAlwaysProtected(tp.tool))
+        continue;
+      const key = `${tp.tool}::${typeof tp.input === "string" ? tp.input : JSON.stringify(tp.input)}`;
+      lastOccurrence.set(key, { msgIdx: mi, partIdx: pi });
+    }
+  }
+  for (let mi = 0;mi < messages.length; mi++) {
+    const msg = messages[mi];
+    if (msg.isIgnored)
+      continue;
+    for (let pi = 0;pi < msg.parts.length; pi++) {
+      const part = msg.parts[pi];
+      if (part.type !== "tool")
+        continue;
+      const tp = part;
+      if (tp.status !== "completed")
+        continue;
+      if (isAlwaysProtected(tp.tool))
+        continue;
+      if (isWithinTieredRetention(tp, currentTurn, config))
+        continue;
+      if (tp.output === PLACEHOLDER_DEDUP)
+        continue;
+      if (state.dedupDecisions.has(tp.callId))
+        continue;
+      const key = `${tp.tool}::${typeof tp.input === "string" ? tp.input : JSON.stringify(tp.input)}`;
+      const last = lastOccurrence.get(key);
+      if (last && (last.msgIdx !== mi || last.partIdx !== pi)) {
+        estimated += (tp.output?.length ?? 0) / 4;
+      }
+    }
+  }
+  const DEFAULT_STALE_ERROR_TURNS2 = 3;
+  for (const msg of messages) {
+    if (msg.isIgnored)
+      continue;
+    for (const part of msg.parts) {
+      if (part.type !== "tool")
+        continue;
+      const tp = part;
+      if (tp.status !== "error")
+        continue;
+      if (isAlwaysProtected(tp.tool))
+        continue;
+      if (tp.turn === undefined)
+        continue;
+      if (currentTurn - tp.turn < DEFAULT_STALE_ERROR_TURNS2)
+        continue;
+      if (state.staleErrorDecisions.has(tp.callId))
+        continue;
+      const inputStr = typeof tp.input === "string" ? tp.input : JSON.stringify(tp.input);
+      estimated += inputStr.length / 4;
+    }
+  }
+  return estimated;
 }
-function parseSafetyCapTokens(safetyCap, modelContextLimit) {
-  const match = safetyCap.match(/^(\d+(?:\.\d+)?)%$/);
-  if (!match)
-    return Math.floor(modelContextLimit * 0.8);
-  return Math.floor(modelContextLimit * parseFloat(match[1]) / 100);
+
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/applyDecisions.ts
+function applyDecisions(messages, state) {
+  const {
+    dedupDecisions,
+    staleErrorDecisions,
+    maskDecisions,
+    messageIndex,
+    blockRegistry,
+    activeByAnchorMessageId
+  } = state;
+  if (dedupDecisions.size === 0 && staleErrorDecisions.size === 0 && maskDecisions.size === 0 && messageIndex.size === 0 && activeByAnchorMessageId.size === 0) {
+    return messages;
+  }
+  const compressedMessageIds = new Set;
+  const blockIdsToInsert = new Set;
+  for (const [msgId, entry] of messageIndex) {
+    if (entry.replacedByBlockId) {
+      compressedMessageIds.add(msgId);
+      blockIdsToInsert.add(entry.replacedByBlockId);
+    }
+  }
+  const anchorToBlock = new Map;
+  for (const [anchorId, blockId] of activeByAnchorMessageId) {
+    const meta = blockRegistry.get(blockId);
+    if (meta && !meta.consumed) {
+      anchorToBlock.set(anchorId, blockId);
+    }
+  }
+  const insertedBlocks = new Set;
+  const result = [];
+  for (const msg of messages) {
+    const blockId = anchorToBlock.get(msg.id);
+    if (blockId && !insertedBlocks.has(blockId)) {
+      const meta = blockRegistry.get(blockId);
+      if (meta) {
+        const text = meta.summaryText ?? getSummaryText(blockId, messages) ?? "";
+        const summaryPart = {
+          type: "summary-block",
+          blockId,
+          text
+        };
+        const summaryMessage = {
+          id: `__summary_${blockId}`,
+          ref: blockId,
+          role: "assistant",
+          sessionId: state.sessionId,
+          createdAt: 0,
+          isSummary: true,
+          parts: [summaryPart]
+        };
+        result.push(summaryMessage);
+        insertedBlocks.add(blockId);
+      }
+    }
+    if (compressedMessageIds.has(msg.id)) {
+      result.push({ ...msg, isIgnored: true });
+      continue;
+    }
+    const hasToolDecisions = msg.parts.some((p) => {
+      if (p.type !== "tool")
+        return false;
+      const tp = p;
+      return dedupDecisions.has(tp.callId) || staleErrorDecisions.has(tp.callId) || maskDecisions.has(tp.callId);
+    });
+    if (!hasToolDecisions) {
+      result.push(msg);
+      continue;
+    }
+    const newParts = msg.parts.map((p) => {
+      if (p.type !== "tool")
+        return p;
+      const tp = p;
+      if (dedupDecisions.has(tp.callId) && tp.status === "completed") {
+        return { ...tp, output: PLACEHOLDER_DEDUP };
+      }
+      if (staleErrorDecisions.has(tp.callId) && tp.status === "error") {
+        return { ...tp, input: PLACEHOLDER_STALE_ERROR_INPUT };
+      }
+      const maskText = maskDecisions.get(tp.callId);
+      if (maskText !== undefined && tp.status === "completed") {
+        return { ...tp, output: maskText };
+      }
+      return p;
+    });
+    result.push({ ...msg, parts: newParts });
+  }
+  return result;
+}
+function getSummaryText(blockId, messages) {
+  const syntheticId = `__summary_${blockId}`;
+  const summaryMsg = messages.find((m) => m.id === syntheticId);
+  if (summaryMsg) {
+    const part = summaryMsg.parts.find((p) => p.type === "summary-block");
+    if (part?.type === "summary-block")
+      return part.text;
+  }
+  for (const msg of messages) {
+    for (const part of msg.parts) {
+      if (part.type === "summary-block" && part.blockId === blockId) {
+        return part.text;
+      }
+    }
+  }
+  return;
+}
+
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/nudges.ts
+function getNudgeLevel(totalTokens, config) {
+  const limit = config.modelContextLimit;
+  const { lowerThreshold, midSoftNudge, upperThreshold, safetyCap } = config.nudges;
+  const lower = resolveThreshold(lowerThreshold, limit);
+  const mid = resolveThreshold(midSoftNudge, limit);
+  const upper = resolveThreshold(upperThreshold, limit);
+  const cap = resolveThreshold(safetyCap, limit);
+  if (totalTokens >= cap)
+    return "safety-cap";
+  if (totalTokens >= upper)
+    return "upper";
+  if (totalTokens >= mid)
+    return "mid-soft";
+  if (totalTokens >= lower)
+    return "low";
+  return "none";
 }
 function buildNudgeText(level, totalTokens, effectiveBudget) {
   const pct = effectiveBudget > 0 ? Math.round(totalTokens / effectiveBudget * 100) : 0;
   switch (level) {
     case "none":
       return;
+    case "low":
+      return `[Context management: ${pct}% of context window used. If you have finished a section of work, consider summarizing it with the compress tool.]`;
     case "mid-soft":
       return `[Context management: ${pct}% of context window used. Consider summarizing completed work with the compress tool if the conversation is getting long.]`;
     case "upper":
@@ -1394,37 +1723,115 @@ function buildNudgeText(level, totalTokens, effectiveBudget) {
 function shouldInjectCompress(level) {
   return level === "upper" || level === "safety-cap";
 }
+function appendNudgeToLastUser(messages, nudgeText) {
+  if (!nudgeText)
+    return messages;
+  for (let i = messages.length - 1;i >= 0; i--) {
+    const m = messages[i];
+    if (m.isIgnored || m.role !== "user")
+      continue;
+    const idx = m.parts.findIndex((p) => p.type === "text");
+    if (idx === -1)
+      continue;
+    const part = m.parts[idx];
+    const newParts = [...m.parts];
+    newParts[idx] = { ...part, text: `${part.text}
 
-// dcp-rewrite/clean-impl/core/finalize.ts
-function runFinalize(messages) {
-  return messages.filter((m) => !m.isIgnored).sort((a, b) => a.createdAt - b.createdAt);
+${nudgeText}` };
+    const newMessages = [...messages];
+    newMessages[i] = { ...m, parts: newParts };
+    return newMessages;
+  }
+  return messages;
 }
 
-// dcp-rewrite/clean-impl/core/pipeline.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/finalize.ts
+function runFinalize(messages) {
+  return messages.filter((m) => !m.isIgnored).sort((a, b) => a.createdAt - b.createdAt).map(injectRefTag);
+}
+function injectRefTag(msg) {
+  if (!msg.ref || msg.isSummary)
+    return msg;
+  const idx = msg.parts.findIndex((p) => p.type === "text" && p.text.trim() !== "");
+  if (idx === -1)
+    return msg;
+  const part = msg.parts[idx];
+  const tag = `<dcp-message-id>${msg.ref}</dcp-message-id>`;
+  const existing = part.text.replace(/^<dcp-message-id\b[^>]*>[\s\S]*?<\/dcp-message-id>\n?/i, "");
+  const newText = `${tag}
+${existing}`;
+  if (newText === part.text)
+    return msg;
+  const newParts = [...msg.parts];
+  newParts[idx] = { ...part, text: newText };
+  return { ...msg, parts: newParts };
+}
+
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/pipeline.ts
 function runPipeline(input, services) {
   const { messages, state, config, nowMs } = input;
   const { tokenizer, workspaceDir } = services;
   const tagged = runTagging(messages, state);
+  const latestWithTokens = [...tagged].reverse().find((m) => m.tokens !== undefined);
+  if (latestWithTokens?.tokens) {
+    state.lastCacheMiss = latestWithTokens.tokens.cacheRead === 0;
+  }
   const budget = computeBudgetBreakdown(tagged, config, tokenizer);
-  const cascadeResult = runCascade(tagged, state.currentTurn, config, state, tokenizer, workspaceDir);
+  const cascadeResult = runCascade(tagged, state.currentTurn, config, state, tokenizer, workspaceDir, nowMs);
   state.stats.totalTokensSaved += cascadeResult.tokensSaved;
-  const postCascadeTokens = estimateContextTokens(cascadeResult.messages, tokenizer);
+  const afterApply = applyDecisions(cascadeResult.messages, state);
+  const postCascadeTokens = estimateContextTokens(afterApply, tokenizer);
   const nudgeLevel = getNudgeLevel(postCascadeTokens, config);
   const nudgeText = buildNudgeText(nudgeLevel, postCascadeTokens, budget.effectiveBudget);
   const injectCompress = shouldInjectCompress(nudgeLevel);
-  const finalized = runFinalize(cascadeResult.messages);
+  const finalized = runFinalize(afterApply);
   const estimatedTokens = estimateContextTokens(finalized, tokenizer);
+  state.lastRequestTime = nowMs;
   return {
     messages: finalized,
     state,
     nudgeText,
     shouldInjectCompress: injectCompress,
     estimatedTokens,
+    savedThisRun: cascadeResult.tokensSaved,
+    cumulativeSaved: state.stats.totalTokensSaved,
     offloadRequests: cascadeResult.offloadRequests
   };
 }
 
-// dcp-rewrite/clean-impl/adapters/opencode/plugin.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/compress/reversible.ts
+function decompressBlock(messages, blockId, state) {
+  const meta = state.blockRegistry.get(blockId);
+  if (!meta)
+    return null;
+  const sourceSet = new Set(meta.sourceMessageIds);
+  const summaryMsgId = `__summary_${blockId}`;
+  const sourceMessages = messages.filter((m) => sourceSet.has(m.id));
+  if (sourceMessages.length === 0)
+    return null;
+  const result = messages.filter((m) => m.id !== summaryMsgId).map((m) => {
+    if (sourceSet.has(m.id)) {
+      return { ...m, isIgnored: false };
+    }
+    return m;
+  });
+  for (const [anchor, bid] of state.activeByAnchorMessageId.entries()) {
+    if (bid === blockId) {
+      state.activeByAnchorMessageId.delete(anchor);
+      break;
+    }
+  }
+  for (const msgId of meta.sourceMessageIds) {
+    const entry = state.messageIndex.get(msgId);
+    if (entry) {
+      const { replacedByBlockId: _, ...rest } = entry;
+      state.messageIndex.set(msgId, rest);
+    }
+  }
+  return { messages: result, blockId };
+}
+
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/adapters/opencode/plugin.ts
 async function DcpPlugin(_input, options) {
   const pluginOptions = extractPluginOptions(["plugin", options ?? {}]);
   const services = await buildServices(pluginOptions.storagePath);
@@ -1482,6 +1889,9 @@ async function DcpPlugin(_input, options) {
       tokenizer,
       workspaceDir: resolveWorkspaceDir(sessionId)
     });
+    if (pipelineResult.savedThisRun > 0) {
+      logger.info(`dcp: saved ${pipelineResult.savedThisRun} tokens this turn ` + `(cumulative ${pipelineResult.cumulativeSaved}) for session ${sessionId}`);
+    }
     for (const req of pipelineResult.offloadRequests) {
       try {
         const { writeFile: writeFile2, mkdir: mkdir2 } = await import("fs/promises");
@@ -1492,8 +1902,9 @@ async function DcpPlugin(_input, options) {
         logger.warn(`dcp: failed to write offload file ${req.path}`, err);
       }
     }
-    const mutatedEntries = applyNeutral(entries, pipelineResult.messages);
-    output.messages = mutatedEntries;
+    const deliveredMessages = appendNudgeToLastUser(pipelineResult.messages, pipelineResult.nudgeText);
+    const mutatedEntries = applyNeutral(entries, deliveredMessages);
+    output.messages.splice(0, output.messages.length, ...mutatedEntries);
     data.state = pipelineResult.state;
     data.entries = mutatedEntries;
     persistence.save(sessionId, data.state).catch((err) => {
@@ -1501,25 +1912,30 @@ async function DcpPlugin(_input, options) {
     });
   }
   async function onSystemTransform(input, output) {
-    const { model } = input;
-    if (isInternalModel(model.modelID))
-      return;
-    const contextLimit = model.limit?.context;
-    if (contextLimit && contextLimit > 0) {
-      defaultContextLimit = contextLimit;
-    }
-    const sessionId = input.sessionID;
-    if (!sessionId)
-      return;
-    const data = sessions.get(sessionId);
-    if (!data)
-      return;
-    if (contextLimit && contextLimit > 0 && data.config.modelContextLimit !== contextLimit) {
-      data.config = buildCoreConfig(sessionId, pluginOptions, contextLimit, model.providerID, model.modelID);
-    }
-    const dcpSystemText = buildDcpSystemText();
-    if (dcpSystemText) {
-      output.system.push(dcpSystemText);
+    try {
+      const { model } = input;
+      const modelId = model?.id ?? model?.modelID ?? model?.info?.id;
+      const providerId = typeof model?.providerID === "string" ? model.providerID : "opencode-go";
+      if (isInternalModel(modelId))
+        return;
+      const contextLimit = model?.limit?.context;
+      if (contextLimit && contextLimit > 0) {
+        defaultContextLimit = contextLimit;
+      }
+      const sessionId = input.sessionID;
+      if (!sessionId)
+        return;
+      const data = sessions.get(sessionId);
+      if (!data)
+        return;
+      if (contextLimit && contextLimit > 0 && data.config.modelContextLimit !== contextLimit) {
+        data.config = buildCoreConfig(sessionId, pluginOptions, contextLimit, providerId, modelId ?? "deepseek-v4-flash");
+      }
+      const systemPromptTokens = output.system.reduce((sum, s) => sum + tokenizer.countTokens(s), 0);
+      data.config.systemPromptTokens = systemPromptTokens;
+      data.state.systemPromptTokens = systemPromptTokens;
+    } catch (err) {
+      logger.warn("dcp: onSystemTransform failed; skipping optimization for this turn", err);
     }
   }
   async function onTextComplete(_input2, output) {
@@ -1541,55 +1957,61 @@ async function DcpPlugin(_input, options) {
     }
   }
   async function onConfig(_input2) {}
+  function commandText(sessionID, id, text) {
+    return [{ id, sessionID, messageID: "dcp-cmd", type: "text", text }];
+  }
   async function onCommandExecuteBefore(input, output) {
-    if (input.command !== "dcp-compress")
+    const { command, sessionID } = input;
+    if (command !== "dcp-compress" && command !== "dcp-decompress" && command !== "dcp-stats") {
       return;
-    const { sessionID } = input;
+    }
     const data = sessions.get(sessionID);
     if (!data) {
-      output.parts = [
-        {
-          id: "dcp-cmd-error",
-          sessionID,
-          messageID: "dcp-cmd",
-          type: "text",
-          text: "dcp-compress: no active session data found. Start a conversation first."
-        }
-      ];
+      output.parts = commandText(sessionID, "dcp-cmd-error", `${command}: no active session data found. Start a conversation first.`);
+      return;
+    }
+    if (command === "dcp-stats") {
+      output.parts = commandText(sessionID, "dcp-cmd-stats", formatStats(data.state.stats));
+      return;
+    }
+    if (command === "dcp-decompress") {
+      const requested = input.arguments?.trim();
+      const blockId = requested && requested.length > 0 ? requested : data.state.latestSummaryBlockId;
+      if (!blockId) {
+        output.parts = commandText(sessionID, "dcp-cmd-noop", "dcp-decompress: no compressed block to restore.");
+        return;
+      }
+      const neutral = toNeutral(data.entries);
+      const result = decompressBlock(neutral, blockId, data.state);
+      if (!result) {
+        output.parts = commandText(sessionID, "dcp-cmd-noop", `dcp-decompress: block "${blockId}" not found, or its source messages are no longer available.`);
+        return;
+      }
+      data.entries = applyNeutral(data.entries, result.messages);
+      if (data.state.latestSummaryBlockId === blockId) {
+        data.state.latestSummaryBlockId = undefined;
+      }
+      persistence.save(sessionID, data.state).catch((err) => {
+        logger.warn("dcp: failed to persist state after decompress", err);
+      });
+      output.parts = commandText(sessionID, "dcp-cmd-decompress", `dcp-decompress: restored block ${blockId}. Its original messages are visible again; the summary has been removed.`);
       return;
     }
     const neutralMessages = toNeutral(data.entries);
-    const { selectCompressRange: selectCompressRange2 } = await Promise.resolve().then(() => (init_execute(), exports_execute));
-    const range = selectCompressRange2(neutralMessages, data.state, data.state.currentTurn, data.config.recencyGuardTurns);
+    const range = selectCompressRange(neutralMessages, data.state, data.state.currentTurn, data.config.recencyGuardTurns);
     if (range.length === 0) {
-      output.parts = [
-        {
-          id: "dcp-cmd-noop",
-          sessionID,
-          messageID: "dcp-cmd",
-          type: "text",
-          text: "dcp-compress: nothing to compress (no stable messages outside the recency window)."
-        }
-      ];
+      output.parts = commandText(sessionID, "dcp-cmd-noop", "dcp-compress: nothing to compress (no stable messages outside the recency window).");
       return;
     }
     const firstMsg = neutralMessages.find((m) => m.id === range[0]);
     const lastMsg = neutralMessages.find((m) => m.id === range[range.length - 1]);
     const startRef = firstMsg?.ref ?? range[0];
     const endRef = lastMsg?.ref ?? range[range.length - 1];
-    output.parts = [
-      {
-        id: "dcp-cmd-trigger",
-        sessionID,
-        messageID: "dcp-cmd",
-        type: "text",
-        text: `[Manual compress trigger] Please compress the conversation from ${startRef} to ${endRef} using the compress tool. Use the 7-section structured summary format.`
-      }
-    ];
+    output.parts = commandText(sessionID, "dcp-cmd-trigger", `[Manual compress trigger] Please compress the conversation from ${startRef} to ${endRef} using the compress tool. Use the 7-section structured summary format.`);
   }
   return {
     "experimental.chat.messages.transform": onMessagesTransform,
-    "experimental.chat.system.transform": async () => {},
+    "experimental.chat.system.transform": onSystemTransform,
     "experimental.text.complete": onTextComplete,
     event: onEvent,
     config: onConfig,
@@ -1600,11 +2022,20 @@ async function DcpPlugin(_input, options) {
   };
 }
 function resolveWorkspaceDir(sessionId) {
-  const root = process.env.WORKSPACES_ROOT ?? "/workspaces";
-  return `${root}/.dcp-offload/${sessionId}`;
+  const root = process.env.WORKSPACES_ROOT ?? join2(tmpdir(), "dcp");
+  return join2(root, ".dcp-offload", sessionId);
 }
-function buildDcpSystemText() {
-  return `You have access to a "compress" tool for context management. When you receive a nudge that the context window is getting full, use the compress tool to summarize completed sections of the conversation. This frees space for new work. Never auto-fire it \u2014 only use it when nudged or when you judge the context is getting crowded.`;
+function formatStats(stats) {
+  return [
+    "dcp stats \u2014 tokens saved this session:",
+    `  total saved:     ${stats.totalTokensSaved}`,
+    `  \xB7 masked:        ${stats.totalTokensMasked}`,
+    `  \xB7 offloaded:     ${stats.totalTokensOffloaded}`,
+    `  \xB7 compressed:    ${stats.totalTokensCompressed}`,
+    `  masking passes:  ${stats.totalMaskingPasses}`,
+    `  compress runs:   ${stats.totalCompressRuns}`
+  ].join(`
+`);
 }
 var server = DcpPlugin;
 export {

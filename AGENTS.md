@@ -291,7 +291,9 @@ goals/
   goal_environment_qa.md   visible developer/operator goal for environment/tool/workspace Q&A
   goal_test.md             developer-only tool self-test goal (legacy)
   roadmaps/                per-goal detailed checklists (roadmap_csrd_esrs.md, roadmap_esg.md)
-scripts/enable-dcp.{sh,ps1}  DEPRECATED: superseded by our MIT context-manager plugin
+scripts/update-context-manager.{ps1,sh}  rebuild .opencode/plugins/context-manager.js
+                           from the EXTERNAL Benedek45/context-manager repo (pinned SHA)
+scripts/enable-dcp.{sh,ps1}  DEPRECATED: superseded by the context-manager plugin
 opencode.json              opencode runtime config (model, agents, skills, MCP, permissions)
 .env / .env.example        secrets + runtime config (.env is gitignored)
 prompts/
@@ -523,10 +525,18 @@ and picking up stray configs — the original collision cause).
   The `compress` tool is non-interactive (no `context.ask`) so it cannot deadlock
   the BFF stream. Plugin state lives in
   `/workspaces/.context-manager/dcp/<sessionId>.json` (shared volume) and is
-  cleaned up by `deleteSession()`. The clean-room `context-manager.js` was developed
-  in a separate private repo (`Benedek45/context-manager`) from public papers and
-  an ideas-only behavioral spec — no AGPL source was committed; the plugin bundled
-  here is the MIT-clean build output.
+  cleaned up by `deleteSession()`. **`context-manager` is a SEPARATE project**
+  (`Benedek45/context-manager`, MIT, clean-room — no AGPL source). This repo only
+  CONSUMES the built bundle: rebuild `.opencode/plugins/context-manager.js` with
+  `scripts/update-context-manager.{ps1,sh}` (clone → `bun build` the opencode adapter
+  → drop the single file), pinned at commit **`2221b92`**. **Plugin-hook gotcha:**
+  opencode invokes `experimental.chat.system.transform` (and the other hooks) with a
+  `Provider.Model` whose model-id field is **`model.id`** (NOT `.modelID`; provider is
+  `model.providerID`, window is `model.limit.context`). A plugin MUST read those and
+  MUST NOT throw inside a hook — a thrown exception is run via `Effect.promise` with no
+  try/catch, becomes a die → `halt` sets `assistantMessage.error` and the turn produces
+  an **empty assistant message** (the BFF does not surface `Session.Event.Error`, so it
+  looks like a silent empty bubble). See §12.
 
 ## 8. Per-session workspace isolation
 
@@ -722,6 +732,44 @@ type-clean (zero errors in any edited file):
   frames; the sidecar is created in `/workspaces/.context-manager/dcp/` and deleted with
   the session. The existing
   `report-compaction.js` remains enabled as the final native-compaction safety net.
+
+Also done (2026-06, context-manager externalized + `system.transform` empty-turn fix —
+two parallel `general` subagents; live-verified; pushed):
+- **Context-manager is now a SEPARATE project.** `Benedek45/context-manager` is the source
+  of truth; this repo CONSUMES only the built bundle `.opencode/plugins/context-manager.js`,
+  rebuilt by `scripts/update-context-manager.{ps1,sh}` (clone → `bun build` the opencode
+  adapter → drop the single file; no plugin source kept here). Pinned at context-manager
+  commit **`2221b92`**. `dcp-rewrite/` (if present) is a gitignored throwaway clone.
+- **ROOT CAUSE of the empty-assistant-response regression** (every turn returned 0 chars with
+  the newer plugin builds): the plugin's `experimental.chat.system.transform` hook read
+  `model.modelID`, but vendored opencode invokes that hook with a `Provider.Model` whose id
+  field is **`model.id`** (NOT `.modelID`; also `model.providerID`, `model.limit.context`) —
+  proof `request.ts:69-73`, `provider/provider.ts:1018-1033`. So `model.modelID` was
+  `undefined` → `undefined.toLowerCase()` THREW. A throw inside a plugin hook runs via
+  `Effect.promise` with NO try/catch (`plugin/index.ts:280-293`) → die → squashed → `halt`
+  (`processor.ts`) sets `assistantMessage.error` + emits `Session.Event.Error`, then idle. The
+  stream dies before any content part → **empty assistant message**; the BFF never maps
+  `Session.Event.Error` to a visible error frame → silent empty bubble. This SUPERSEDES the
+  earlier "system-transform hook is intentionally no-op" note above — the external plugin's
+  `system.transform` now runs (and is guarded).
+- **FIX (context-manager `248f97b`→`2221b92`):** null-guard `isInternalModel`/`selectCacheModel`
+  (`typeof !== "string"` → bail), wrap the ENTIRE `onSystemTransform` body in try/catch (a
+  read-only optimization hook must never be able to empty a turn), read the id defensively as
+  `model.id ?? model.modelID ?? model.info?.id`, + a regression test. Repo: **117 tests pass,
+  typecheck clean.** Live-verified here (production stack): turn-1 + multi-turn (incl. a
+  `time_get_current_time` tool turn + long messages) all non-empty; the 72,674-byte bundle
+  rebuilt from the pinned commit reproduces identically.
+- **DURABLE GOTCHA — run production, not the DEV overlay.** Start the stack with
+  `docker compose -f docker-compose.yml up -d`. Plain `docker compose up` auto-merges
+  `docker-compose.override.yml` → app runs `next dev` → **crashes `EACCES` on `/app/.next/cache`
+  + `/app/.next/trace`** (non-root user) → connections drop. `start.ps1` already uses `-f`.
+- **AWS / future model.** AWS CLI **v2** is required for SSO (`C:\Program Files\Amazon\AWSCLIV2\aws.exe`;
+  the v1 at `~/.local/bin/aws.cmd` lacks `aws sso login`); `aws sso login --profile
+  908404960420_PowerUserAccess` works (account 908404960420, region eu-central-1). Future
+  local-model target = **Gemma 4 26B A4B** on an NVIDIA L40S 48GB (256K context, MoE), to be
+  served on AWS; the production model stays `opencode-go/deepseek-v4-flash` until that endpoint
+  exists — do not swap `opencode.json` yet.
+- **`HANDOFF.md` removed** — `AGENTS.md` is the single source of truth.
 
 **SECURITY FLAG — BFF auth (audit C-1):** every `/api/*` route is currently
 **unauthenticated**. This is a KNOWN, ACCEPTED gap **while the app is in development**
