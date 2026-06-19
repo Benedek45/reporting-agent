@@ -302,8 +302,12 @@ export const layer = Layer.effect(
             ["node_modules", "package.json", "package-lock.json", "bun.lock", ".gitignore"].join("\n"),
           )
           .pipe(
+            // Best-effort convenience file. A read-only config dir (e.g. a `:ro`
+            // bind mount) raises EROFS (reason._tag "Unknown"), not just
+            // PermissionDenied — neither must ever crash boot, so swallow all
+            // write failures here.
             Effect.catchIf(
-              (e) => e.reason._tag === "PermissionDenied",
+              () => true,
               () => Effect.void,
             ),
           )
