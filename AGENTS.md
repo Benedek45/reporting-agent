@@ -785,59 +785,55 @@ two parallel `general` subagents; live-verified; pushed):
   (`C:\Program Files\Amazon\AWSCLIV2\aws.exe`; v1 at `~/.local/bin/aws.cmd` lacks `aws sso login`);
   `aws sso login --profile 908404960420_PowerUserAccess` works (account 908404960420).
   The first target (**Gemma 4 26B A4B** on g6e.xlarge/L40S 48GB) was blocked by regional
-  `InsufficientInstanceCapacity`. The working test endpoint is now **Gemma 4 E4B**
-  (`google/gemma-4-E4B-it`, Apache 2.0, 128K context, 8B params / 4.5B effective,
-  native system role + function calling) served by **vLLM** on a **g5.xlarge**
-  (1× A10G 24GB VRAM) in `eu-central-1`. **Use ON-DEMAND, not spot.**
-  Spot instances on g5.xlarge were repeatedly reclaimed mid-test (observed 3× in
-  eu-central-1), wasting repeated setup. On-demand avoids this; the instance stays up
-  until explicitly terminated. Running instance: `i-0c8dacd7ef0ba1fcf`,
-  public IP `18.196.82.12`, endpoint `http://18.196.82.12:8000/v1`. Terminate when
-  idle — it is billable (~$1.21/hr). Quota constraint remains: Running On-Demand G
-  and VT vCPU quota = **4.0**; do NOT launch g6e.2xlarge without a quota increase
-  (`aws service-quotas request-service-quota-increase --service-code ec2
-  --quota-code L-3819A6DF --desired-value 8`). SSH key is
-  `D:\AGI_gent\gemma4-vllm-key.pem` (gitignored). Security group `gemma4-vllm-sg`
-  (sg-0ef072c9e50e1cf42) opens TCP 22 + 8000.   vLLM command used:
+  `InsufficientInstanceCapacity` (g6e sold out globally). After a quota increase to 8 vCPU,
+  the working endpoint is **Gemma 4 26B A4B NVFP4** (`Neural-ICE/Gemma-4-26B-A4B-it-NVFP4`,
+  Apache 2.0, 256K model context served at 131K, MoE 3.8B active) on a **g6.2xlarge**
+  (1× L4 24GB VRAM) in `eu-central-1a`, on-demand (~$0.98/hr). **Use ON-DEMAND, not spot.**
+  Running instance: `i-04e863d7398d3df87`, public IP `18.199.84.125`,
+  endpoint `http://18.199.84.125:8000/v1`. SSH key is
+  `D:\AGI_gent\gemma4-vllm-key.pem` (gitignored). vLLM command used:
   ```
-  vllm serve google/gemma-4-E4B-it \
+  vllm serve Neural-ICE/Gemma-4-26B-A4B-it-NVFP4 \
     --host 0.0.0.0 --port 8000 \
-    --max-model-len 32768 --gpu-memory-utilization 0.90 \
+    --max-model-len 131072 --gpu-memory-utilization 0.90 \
+    --quantization modelopt --moe-backend marlin --trust-remote-code \
+    --kv-cache-dtype fp8 \
     --reasoning-parser gemma4 --tool-call-parser gemma4 --enable-auto-tool-choice \
     --chat-template /home/ec2-user/tool_chat_template_gemma4.jinja \
+    --default-chat-template-kwargs '{"enable_thinking": true}' \
     --api-key $GEMMA_API_KEY
   ```
   The `--chat-template` flag is **critical** — without it, streaming Gemma tool
   calls emit raw `<|tool_call>...</|tool_call>` tokens instead of parsed OpenAI
-  tool_calls objects. The template is downloaded from
+  tool_calls objects. The `--default-chat-template-kwargs '{"enable_thinking": true}'`
+  flag enables Gemma 4 **thinking mode** by default (without it, reasoning is disabled —
+  `--reasoning-parser` only parses thinking IF the model produces it). The template is
+  downloaded from
   `https://raw.githubusercontent.com/vllm-project/vllm/main/examples/tool_chat_template_gemma4.jinja`.
   `opencode.json` contains a custom `gemma4-aws` provider using
   `@ai-sdk/openai-compatible`, baseURL from `{env:GEMMA_BASE_URL}`, apiKey from
-  `{env:GEMMA_API_KEY}`, and model `google/gemma-4-E4B-it` with limit `{context:32768,
-  output:8192}`. The verified full model id is `gemma4-aws/google/gemma-4-E4B-it`.
+  `{env:GEMMA_API_KEY}`, and model `Neural-ICE/Gemma-4-26B-A4B-it-NVFP4` with limit
+  `{context:131072, output:8192}`. The verified full model id is
+  `gemma4-aws/Neural-ICE/Gemma-4-26B-A4B-it-NVFP4`.
    Docker Compose injects `GEMMA_API_KEY` and `GEMMA_BASE_URL` only into the `opencode`
    container; `.env` is gitignored. The BFF/app selects the requested chat model via
    `OPENCODE_MODEL` (default `opencode-go/deepseek-v4-flash`; set to
-   `gemma4-aws/google/gemma-4-E4B-it` for a browser/UI Gemma test). Verified direct
-   opencode prompt and a `compliance` agent smoke test both returned non-empty Gemma
-   responses. **The instance is currently TERMINATED** (Gemma is offline; `GEMMA_BASE_URL`
-   points to the dead IP `18.196.82.12`). To re-deploy: launch a g5.xlarge **on-demand**
-   in eu-central-1, run the vLLM command above, update `GEMMA_BASE_URL` in `.env`
-   (~10 min; all other config is already wired).
+   `gemma4-aws/Neural-ICE/Gemma-4-26B-A4B-it-NVFP4` for a browser/UI Gemma test). Verified
+   direct vLLM prompt returns `reasoning` field (thinking active); full app chat path
+   returns 674-char CSRD interview reply. DCP context-manager configured with percentage
+   thresholds (hardCap 88%, nudges 45/62/75/45%) resolved against the 131K served window.
 
-   **Gemma E4B known limitations** (observed, not root-caused):
+   **Gemma E4B known limitations** (observed earlier on the smaller E4B model, not the 26B):
    - **Intermittent empty turns** — some turns produce 0 text + 0 tools, likely a Gemma
      4 thinking-mode quirk (reasoning-only, no final answer under certain inputs).
-   - **Weak document reading** — the 4.5B-effective model struggles to follow tool-use
-     instructions (e.g. claimed it "cannot read" .docx files even though `.md` sidecars
-     existed on disk). The infrastructure and wiring are correct and proven. The model's
-     capability is the limiting factor for compliance-reporting workloads.
+   - **Weak document reading** — the 4.5B-effective E4B struggled to follow tool-use
+     instructions. The 26B A4B MoE (3.8B active) is the recommended production candidate.
 
    For a production local-model test at this caliber, consider the **Gemma 4 26B A4B**
-   (MoE, 3.8B active, 256K ctx) on L40S 48GB, which requires a quota increase
-   (`g6e.xlarge` fits at 4 vCPU; `g6e.2xlarge` needs 8). The E4B deployment proved the
-   end-to-end architecture: custom openai-compatible provider + vLLM with chat-template +
-   on-demand GPU instances. Scaling to a larger model uses the same wiring.
+   on L40S 48GB (FP8 = 28.8GB, fits natively) which requires a further quota increase
+   (`g6e.xlarge` fits at 4 vCPU; `g6e.2xlarge` needs 8). The NVFP4-on-L4 deployment proved
+   the end-to-end architecture: custom openai-compatible provider + vLLM with chat-template +
+   thinking enabled + on-demand GPU instances. Scaling to L40S uses the same wiring.
 - **`HANDOFF.md` removed** — `AGENTS.md` is the single source of truth.
 
 **SECURITY — agent sandbox escape attempt (2026-06, adversarial test).** A user

@@ -139,25 +139,32 @@ and doesn't need to be re-researched or re-litigated.
 
 ---
 
-## 7. Local model deployment (Gemma 4 E4B on AWS vLLM)
+## 7. Local model deployment (Gemma 4 26B A4B on AWS vLLM)
 
 ### 7.1 Instance & infrastructure
-- **Target:** g5.xlarge (A10G 24GB), eu-central-1, **ON-DEMAND** (~$1.21/hr). Spot was repeatedly reclaimed.
-- **Security group:** `gemma4-vllm-sg` (sg-0ef072c9e50e1cf42), TCP 22 + 8000.
+- **Current:** g6.2xlarge (L4 24GB), eu-central-1a, on-demand (~$0.98/hr). Quota increased to 8 vCPU.
+- **Previous attempts:** g6e.xlarge (L40S 48GB) sold out globally; g5.xlarge spot reclaimed 3×.
+- **Security group:** `gemma4-vllm-sg`, TCP 22 + 8000 (per region).
 - **SSH key:** `D:\AGI_gent\gemma4-vllm-key.pem` (gitignored).
-- **Quota:** Running On-Demand G and VT vCPU = 4.0. g6e.xlarge for larger models also fits at 4 vCPU.
-- **Currently TERMINATED** — Gemma is offline.
+- **Quota:** G+VT vCPU increased to 8 (both on-demand L-DB2E81BA and spot L-3819A6DF) in eu-central-1.
 
-### 7.2 vLLM command (REQUIRED for streaming tool calls)
+### 7.2 vLLM command (thinking enabled, REQUIRED flags)
 ```
-vllm serve google/gemma-4-E4B-it \
+vllm serve Neural-ICE/Gemma-4-26B-A4B-it-NVFP4 \
   --host 0.0.0.0 --port 8000 \
-  --max-model-len 32768 --gpu-memory-utilization 0.90 \
+  --max-model-len 131072 --gpu-memory-utilization 0.90 \
+  --quantization modelopt --moe-backend marlin --trust-remote-code \
+  --kv-cache-dtype fp8 \
   --reasoning-parser gemma4 --tool-call-parser gemma4 --enable-auto-tool-choice \
   --chat-template /home/ec2-user/tool_chat_template_gemma4.jinja \
+  --default-chat-template-kwargs '{"enable_thinking": true}' \
   --api-key $GEMMA_API_KEY
 ```
-The `--chat-template` flag downloads from `https://raw.githubusercontent.com/vllm-project/vllm/main/examples/tool_chat_template_gemma4.jinja`. Without it, streaming tool calls leak raw `<|tool_call>...</|tool_call>` tokens.
+- `--chat-template` is REQUIRED for streaming tool calls (without it, raw `<|tool_call>` tokens leak).
+- `--default-chat-template-kwargs '{"enable_thinking": true}'` enables Gemma 4 thinking by default for all requests. Without it, reasoning is DISABLED — `--reasoning-parser` only parses thinking IF the model produces it, but Gemma 4 needs `enable_thinking=true` to actually generate reasoning tokens.
+- Template: `https://raw.githubusercontent.com/vllm-project/vllm/main/examples/tool_chat_template_gemma4.jinja`
+- Model: NVFP4 community quant (~15.3GB weights, fits L4 24GB with FP8 KV cache).
+- VRAM: ~20.7/23GB used; KV cache ~164K tokens at 131K max-model-len.
 
 ### 7.3 Provider wiring in opencode.json
 ```json
@@ -165,14 +172,17 @@ The `--chat-template` flag downloads from `https://raw.githubusercontent.com/vll
   "npm": "@ai-sdk/openai-compatible",
   "name": "Gemma 4 (AWS vLLM)",
   "options": { "apiKey": "{env:GEMMA_API_KEY}", "baseURL": "{env:GEMMA_BASE_URL}" },
-  "models": { "google/gemma-4-E4B-it": { "name": "Gemma 4 E4B", "limit": {"context":32768,"output":8192} } }
+  "models": { "Neural-ICE/Gemma-4-26B-A4B-it-NVFP4": { "name": "Gemma 4 26B A4B", "limit": {"context":131072,"output":8192} } }
 }
 ```
-Verified model ID: `gemma4-aws/google/gemma-4-E4B-it`. Custom providers use `@ai-sdk/openai-compatible` npm package — built-in provider slots cannot be overridden.
+Verified model ID: `gemma4-aws/Neural-ICE/Gemma-4-26B-A4B-it-NVFP4`. All agents + small_model set to this. DCP context-manager configured with percentage thresholds (hardCap 88%, nudges 45/62/75/45%) resolved against 131K window.
 
-### 7.4 Genuine limitations (architecture/capability, not infrastructure)
-- Intermittent empty turns (reasoning-only, no final answer). Likely a Gemma 4 thinking-mode quirk.
-- Weak document reading at E4B scale (4.5B effective). Could not follow tool instructions (claimed "can't read" despite .md sidecars). The 26B A4B MoE is the recommended production candidate for compliance workloads.
+### 7.4 Thinking mode notes
+- Gemma 4 reasoning is **disabled by default** in vLLM. Must pass `enable_thinking=true` either server-wide (`--default-chat-template-kwargs`) or per-request (`chat_template_kwargs`).
+- `reasoning_effort` parameter ("low"/"medium"/"high") also auto-enables thinking; "none" disables it.
+- Thinking produces additional tokens — increase `max_tokens` / `--max-model-len` accordingly.
+- Multi-turn: strip thoughts from previous assistant turns (the chat template handles this).
+- Verified live: direct vLLM returns `reasoning` field (312 chars for "2+2"); full app chat path returns 674-char CSRD interview reply.
 
 ---
 
