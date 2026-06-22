@@ -77,6 +77,50 @@ const MARK_DONE_TOOL = {
   },
 };
 
+const MARK_UNDONE_TOOL = {
+  name: "mark_undone",
+  description:
+    "Marks one or more roadmap checklist items as NOT complete again (flips " +
+    "`- [x]` back to `- []`) in the canonical progress file (roadmap.md at the " +
+    "workspace root). This is the ONLY correct way to UNDO progress — do NOT edit " +
+    "roadmap.md with the file editor. " +
+    "WHEN TO USE: when an item you previously marked done turns out to be wrong — " +
+    "e.g. the fact-checker found a contradiction in the figure, the source document " +
+    "was deleted or replaced with conflicting data, or the user corrects/retracts " +
+    "something they confirmed earlier. Re-open the affected item(s) so the progress " +
+    "bar reflects reality. " +
+    "HOW IT MATCHES: you pass short item descriptions; the server fuzzy-matches each " +
+    "against the CHECKED (`- [x]`) items in roadmap.md and flips them back to open. " +
+    "You do not need exact wording (call `roadmap_status` first to see labels). " +
+    "ARGUMENTS: workspace_dir = the absolute path of your current working directory " +
+    "(the workspace root, e.g. /workspaces/<id>); items = an array of short item " +
+    "descriptions to re-open. " +
+    "RETURNS: which items were re-opened (with full labels), which queries matched " +
+    "no checked item, and the new done/total counts. It NEVER deletes, reorders, " +
+    "re-titles, or shortens items; it only flips checkboxes.",
+  inputSchema: {
+    type: "object",
+    properties: {
+      workspace_dir: {
+        type: "string",
+        description:
+          "Absolute path of the workspace root (your current working directory), " +
+          "e.g. /workspaces/<session-id>. A trailing '/output' is ignored. The " +
+          "tool always targets <workspace_dir>/roadmap.md.",
+      },
+      items: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "Short descriptions of the checklist items to re-open. Each is " +
+          "fuzzy-matched against the CHECKED items in roadmap.md. " +
+          'Example: ["Scope 1 emissions", "Water withdrawal"].',
+      },
+    },
+    required: ["workspace_dir", "items"],
+  },
+};
+
 const STATUS_TOOL = {
   name: "status",
   description:
@@ -281,7 +325,14 @@ function handleStatus(args) {
   });
 }
 
-function handleMarkDone(args) {
+/**
+ * Shared engine for mark_done / mark_undone. When markDone is true it matches
+ * UNCHECKED items and flips them to `- [x]`; when false it matches CHECKED items
+ * and flips them back to `- [ ]`. Only ever flips checkboxes — never deletes,
+ * reorders, re-titles, or shortens items. Each candidate line is used at most
+ * once per call.
+ */
+function flipItems(args, markDone) {
   const resolved = resolveRoadmapPath(args && args.workspace_dir);
   if (resolved.error) return jsonResult({ error: resolved.error }, true);
 
@@ -305,18 +356,22 @@ function handleMarkDone(args) {
 
   const lines = text.split("\n");
 
-  // Index the UNCHECKED task lines so we can fuzzy-match against their labels.
-  const openItems = []; // { lineIdx, label }
+  // Candidate task lines: when marking done, match OPEN items; when un-marking,
+  // match DONE items. We fuzzy-match queries against these labels.
+  const candidates = []; // { lineIdx, label }
   for (let i = 0; i < lines.length; i++) {
     const m = TASK_RE.exec(lines[i].replace(/\s+$/, ""));
-    if (m && m[2].toLowerCase() !== "x") {
-      openItems.push({ lineIdx: i, label: m[4].trim() });
+    if (!m) continue;
+    const isDone = m[2].toLowerCase() === "x";
+    if (markDone ? !isDone : isDone) {
+      candidates.push({ lineIdx: i, label: m[4].trim() });
     }
   }
 
-  const marked = [];
+  const changed = [];
   const unmatched = [];
   const usedLineIdx = new Set();
+  const newChar = markDone ? "x" : " ";
 
   for (const query of items) {
     if (typeof query !== "string" || query.trim() === "") {
@@ -325,12 +380,12 @@ function handleMarkDone(args) {
     }
     let best = null;
     let bestScore = 0;
-    for (const oi of openItems) {
-      if (usedLineIdx.has(oi.lineIdx)) continue;
-      const score = matchScore(query, oi.label);
+    for (const c of candidates) {
+      if (usedLineIdx.has(c.lineIdx)) continue;
+      const score = matchScore(query, c.label);
       if (score > bestScore) {
         bestScore = score;
-        best = oi;
+        best = c;
       }
     }
     if (best && bestScore >= MATCH_THRESHOLD) {
@@ -338,8 +393,8 @@ function handleMarkDone(args) {
       // Flip the checkbox on that line, preserving indentation/bullet/label.
       const m = TASK_RE.exec(lines[best.lineIdx].replace(/\s+$/, ""));
       if (m) {
-        lines[best.lineIdx] = `${m[1]}x${m[3]}${m[4]}`;
-        marked.push(best.label);
+        lines[best.lineIdx] = `${m[1]}${newChar}${m[3]}${m[4]}`;
+        changed.push(best.label);
       } else {
         unmatched.push(query);
       }
@@ -348,7 +403,7 @@ function handleMarkDone(args) {
     }
   }
 
-  if (marked.length > 0) {
+  if (changed.length > 0) {
     try {
       atomicWrite(resolved.path, lines.join("\n"));
     } catch (err) {
@@ -360,14 +415,24 @@ function handleMarkDone(args) {
   }
 
   const after = parseRoadmap(lines.join("\n"));
-  return jsonResult({
-    marked,
+  const result = {
     unmatched,
     done: after.done,
     total: after.total,
     remaining: after.total - after.done,
     pct: after.total === 0 ? 0 : Math.round((after.done / after.total) * 100),
-  });
+  };
+  // Keep the field name intuitive per direction.
+  result[markDone ? "marked" : "unmarked"] = changed;
+  return jsonResult(result);
+}
+
+function handleMarkDone(args) {
+  return flipItems(args, true);
+}
+
+function handleMarkUndone(args) {
+  return flipItems(args, false);
 }
 
 // ── request dispatcher ───────────────────────────────────────────────────────
@@ -388,7 +453,7 @@ function dispatch(msg) {
       break;
 
     case "tools/list":
-      reply(id, { tools: [MARK_DONE_TOOL, STATUS_TOOL] });
+      reply(id, { tools: [MARK_DONE_TOOL, MARK_UNDONE_TOOL, STATUS_TOOL] });
       break;
 
     case "tools/call": {
@@ -397,6 +462,8 @@ function dispatch(msg) {
 
       if (toolName === "mark_done") {
         reply(id, handleMarkDone(toolArgs));
+      } else if (toolName === "mark_undone") {
+        reply(id, handleMarkUndone(toolArgs));
       } else if (toolName === "status") {
         reply(id, handleStatus(toolArgs));
       } else {

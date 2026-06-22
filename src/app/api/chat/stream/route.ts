@@ -43,14 +43,17 @@ function workspaceGuidance(directory: string): string {
     "- The user's progress bar is driven by a fixed checklist. To record progress, " +
     "call the `roadmap_mark_done` tool. Pass `workspace_dir` = `" +
     directory +
-    "` and `items` = an array of short descriptions of the checklist items you have " +
-    "completed (each item's data collected from a sourced document and reflected in " +
-    "the report). You do not need exact wording -- the tool fuzzy-matches your " +
-    "description to the checklist; call `roadmap_status` with the same `workspace_dir` " +
-    "first if you want to see the exact item labels.\n" +
+    "` and `items` = an array of short descriptions of the checklist items whose " +
+    "data you have now OBTAINED from a sourced document (a confirmed answer from the " +
+    "user or an uploaded file). You do NOT need to have written the data into the " +
+    "report first — collecting it is enough to mark the item done. You do not need " +
+    "exact wording -- the tool fuzzy-matches your description to the checklist.\n" +
+    "- If an item you marked earlier turns out wrong (a contradiction is found, a " +
+    "source is removed/replaced, or the user corrects or retracts it), re-open it " +
+    "by calling the `roadmap_mark_undone` tool the same way.\n" +
     "- Do NOT edit `roadmap.md` yourself and do NOT create `output/roadmap.md`. The " +
-    "`roadmap_mark_done` tool is the ONLY correct way to update progress; it flips the " +
-    "right checkboxes in the canonical file for you."
+    "`roadmap_mark_done` / `roadmap_mark_undone` tools are the ONLY correct way to " +
+    "update progress; they flip the right checkboxes in the canonical file for you."
   );
 }
 
@@ -137,9 +140,16 @@ function diffBlock(f: { name: string; diff?: string }): string {
 function buildNotifyText(n: NotifyPayload): string {
   const prefix = "[Workspace update — not a user message] ";
   const tail =
-    "\n\nRead whatever is relevant, fold any useful data into the report, " +
-    "update roadmap.md to reflect new progress, then briefly tell the user what " +
-    "you found and what (if anything) you still need.";
+    "\n\nThen do these steps IN ORDER:\n" +
+    "1. FIRST, call `roadmap_mark_done` for EVERY checklist item this document " +
+    "gives you data for. An uploaded document is sufficient evidence ON ITS OWN — " +
+    "do NOT wait for the user to confirm it, and do NOT require the data to be in " +
+    "the report first. If the file shows e.g. the fiscal year, energy use, water " +
+    "use, emissions, or headcount, mark those items now.\n" +
+    "2. THEN fold the data into `output/report.md` (create it from the template if " +
+    "it does not exist yet, using `[DATA NEEDED: …]` for anything still missing).\n" +
+    "3. FINALLY give the user a one-line summary of what you found and what you " +
+    "still need.";
 
   if (n.kind === "upload") {
     const fresh = n.files.filter((f) => !f.diff);

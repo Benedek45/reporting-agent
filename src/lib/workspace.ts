@@ -780,10 +780,16 @@ export async function renderRoadmapForContext(
   lines.push(
     "This is your working checklist for the whole engagement; it is included " +
       "every turn so you always know the plan and what remains. `[x]` = done, " +
-      "`[ ]` = still open. Whenever you have collected an item's data from a " +
-      "sourced document AND reflected it in `output/report.md`, mark it the SAME " +
-      "turn by calling the `roadmap_mark_done` tool with short descriptions of " +
-      "the items you just finished. Never fabricate data to tick a box, and do " +
+      "`[ ]` = still open. Mark an item the SAME turn you OBTAIN its data from a " +
+      "sourced document (a confirmed answer from the user OR an uploaded file). An " +
+      "uploaded document is sufficient evidence on its own — do NOT wait for the " +
+      "user to re-confirm data a document already provides, and you do NOT need to " +
+      "have written it into `output/report.md` yet; having the data is enough to " +
+      "mark it done. Call the `roadmap_mark_done` tool with short descriptions of " +
+      "the items you just satisfied. If an item you marked earlier turns out wrong " +
+      "— the fact-checker finds a contradiction, a source is removed or replaced " +
+      "with conflicting data, or the user corrects or retracts it — re-open it with " +
+      "the `roadmap_mark_undone` tool. Never fabricate data to tick a box, and do " +
       "not edit `roadmap.md` yourself."
   );
   for (const sec of state.sections) {

@@ -307,7 +307,7 @@ prompts/
   report-compaction.js     MIT plugin: inject goal+STATUS+[DATA NEEDED] at compaction
 mcp/
   workspace/index.mjs      MCP (ENABLED, zero-dep): delete_file, present_file under /workspaces
-  roadmap/index.mjs        MCP (ENABLED, zero-dep): mark_done, status — flip roadmap.md checkboxes
+  roadmap/index.mjs        MCP (ENABLED, zero-dep): mark_done, mark_undone, status — flip roadmap.md checkboxes
   time/index.mjs           MCP (ENABLED, zero-dep): current date/time only
   fact-check/index.mjs     MCP (ENABLED, zero-dep): Tavily-backed verify_claim
   doc-generate/index.mjs   MCP stub: SUPERSEDED by converter /render (md->PDF/DOCX)
@@ -478,7 +478,8 @@ and picking up stray configs — the original collision cause).
     that deletes a file (+ its `.md` sidecar) under `/workspaces`. It exists because
     opencode has **no built-in delete tool** and we deny `bash`; it powers the "ask
     the model to delete" flow.
-  - `roadmap` (**enabled**): `mark_done` + `status` — a **zero-dependency** stdio
+  - `roadmap` (**enabled**): `mark_done` + `mark_undone` + `status` — a
+    **zero-dependency** stdio
     server that maintains the per-session progress checklist. **Why it exists:**
     the progress bar reads the canonical `roadmap.md` at the workspace ROOT (56
     items, `- [ ]`/`- [x]`), but models (esp. Gemma 4) are unreliable at editing
@@ -487,7 +488,12 @@ and picking up stray configs — the original collision cause).
     (`- [in_progress]`). `roadmap_mark_done {workspace_dir, items:[…]}` lets the
     agent NAME items; the server **fuzzy-matches** each against the unchecked
     items and flips only the right `- [ ]`→`- [x]` (atomic temp+rename), never
-    rewriting/reordering/re-titling. `roadmap_status {workspace_dir}` returns the
+    rewriting/reordering/re-titling. `roadmap_mark_undone {workspace_dir, items}`
+    is the inverse — it fuzzy-matches against the CHECKED items and flips
+    `- [x]`→`- [ ]`, so the agent can RE-OPEN an item when the fact-checker finds a
+    contradiction, a source is removed/replaced with conflicting data, or the user
+    corrects/retracts something (both share one `flipItems(args, markDone)` engine).
+    `roadmap_status {workspace_dir}` returns the
     checklist with exact labels. A trailing `/output` on `workspace_dir` is
     normalized off; paths validated under `/workspaces`. The per-turn
     `WORKSPACE_GUIDANCE` injects the exact `workspace_dir` and tells the agent to

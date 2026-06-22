@@ -1,9 +1,10 @@
 # CSRD / ESRS Reporting Roadmap
 
 This is the working checklist for the sustainability statement. Tick each item
-(`- [ ]` → `- [x]`) once the data is collected from a **sourced document** and
-reflected in `output/report.md`. Items left as `[DATA NEEDED]` in the report stay
-unchecked. Do not invent data to check a box.
+(`- [ ]` → `- [x]`) as soon as the data is collected from a **sourced document**
+(a confirmed answer from the user or an uploaded file) — you do not need to have
+written it into `output/report.md` yet. Items with no sourced data stay unchecked.
+Do not invent data to check a box.
 
 ## 1. Engagement setup
 
