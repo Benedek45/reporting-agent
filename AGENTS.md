@@ -834,8 +834,8 @@ two parallel `general` subagents; live-verified; pushed):
   the working endpoint is **Gemma 4 26B A4B NVFP4** (`Neural-ICE/Gemma-4-26B-A4B-it-NVFP4`,
   Apache 2.0, 256K model context served at 131K, MoE 3.8B active) on a **g6.2xlarge**
   (1× L4 24GB VRAM) in `eu-central-1a`, on-demand (~$0.98/hr). **Use ON-DEMAND, not spot.**
-  Running instance: `i-04e863d7398d3df87`, public IP `18.199.84.125`,
-  endpoint `http://18.199.84.125:8000/v1`. SSH key is
+  Running instance: `i-04e863d7398d3df87`, public IP varies (stopped; start to resume),
+  endpoint `http://<instance-ip>:8000/v1`. SSH key is
   `D:\AGI_gent\gemma4-vllm-key.pem` (gitignored). vLLM command used:
   ```
   vllm serve Neural-ICE/Gemma-4-26B-A4B-it-NVFP4 \
@@ -867,6 +867,17 @@ two parallel `general` subagents; live-verified; pushed):
    direct vLLM prompt returns `reasoning` field (thinking active); full app chat path
    returns 674-char CSRD interview reply. DCP context-manager configured with percentage
    thresholds (hardCap 88%, nudges 45/62/75/45%) resolved against the 131K served window.
+
+   **L4 24GB Qwen 27B investigation (2026-06):** Attempted to run Qwen3.6-27B, Qwen3.5-27B,
+   and Qwen3.6-27B GGUF Q3 on the g6.2xlarge L4 24GB. All failed — the root cause is that
+   **Qwen3.5 and Qwen3.6 27B both use a Gated DeltaNet hybrid architecture** which requires
+   ~20 GiB GPU memory at 4-bit (AWQ or GPTQ), leaving no room for KV cache or CUDA graph
+   workspace on L4 24GB. GGUF Q3 (13.8 GB) would leave ~4 GiB headroom, but vLLM 0.23.0
+   (the latest stable) lacks GGUF weight-name mappings for the DeltaNet layers (`linear_attn.dt_bias`
+   etc.) — this is being fixed in vLLM main (PR #39559) but is not yet in a stable release.
+   **For Qwen 27B models: need L40S 48GB (g6e.xlarge, 48 GB)** where Qwen3.6-27B FP8 (28 GB)
+   fits with room for KV. The official vLLM recipe for `Qwen/Qwen3.6-27B-FP8` targets a
+   "single 40 GB GPU". g6e capacity was sold out at time of testing; revisit when available.
 
    **Gemma E4B known limitations** (observed earlier on the smaller E4B model, not the 26B):
    - **Intermittent empty turns** — some turns produce 0 text + 0 tools, likely a Gemma
