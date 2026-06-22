@@ -497,8 +497,13 @@ and picking up stray configs — the original collision cause).
   smoke test confirmed the first visible answer skips "loading skill/template" chatter.
   Gemma 4 can still emit setup/planning as final `text` rather than provider `reasoning`,
   so `/api/chat/stream` appends a last-position visible-reply guard every turn and
-  `MarkdownMessage` strips a narrow leading setup preamble pattern before rendering
-  historical/live assistant text.
+  `MarkdownMessage.stripInternalPreamble()` removes leaked planning before rendering
+  historical/live assistant text. The strip fires only when a setup marker is present
+  (`The skill … is loaded` — name optional, `Now I need/will`, `The first visible message`,
+  `I will combine`, `The user said`, `Plan:`, `Greeting:`), then keeps the text from the
+  **last** greeting (`Hello!`/`Hi!`/`Good morning…`) — Gemma often drafts a greeting, then
+  rewrites a final one, so last-greeting yields the clean final answer (verified on two real
+  leaked sessions). Normal answers (no markers) are never rewritten.
 - **`converter` does both directions:** `POST /convert` (file→Markdown, MarkItDown)
   and `POST /render` (`{markdown,format:"pdf"|"docx"}`→binary, via `markdown`+
   `weasyprint` (BSD) and `htmldocx`+`python-docx` (MIT) — all business-friendly).
