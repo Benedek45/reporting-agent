@@ -495,6 +495,10 @@ and picking up stray configs — the original collision cause).
   hidden in the consumer UI to avoid exposing internal permission/path errors to
   business users. The prompt explicitly forbids visible setup narration; a Hungarian
   smoke test confirmed the first visible answer skips "loading skill/template" chatter.
+  Gemma 4 can still emit setup/planning as final `text` rather than provider `reasoning`,
+  so `/api/chat/stream` appends a last-position visible-reply guard every turn and
+  `MarkdownMessage` strips a narrow leading setup preamble pattern before rendering
+  historical/live assistant text.
 - **`converter` does both directions:** `POST /convert` (file→Markdown, MarkItDown)
   and `POST /render` (`{markdown,format:"pdf"|"docx"}`→binary, via `markdown`+
   `weasyprint` (BSD) and `htmldocx`+`python-docx` (MIT) — all business-friendly).

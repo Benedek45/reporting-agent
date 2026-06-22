@@ -17,10 +17,26 @@ function stripDcpTags(text: string): string {
   return text.replace(DCP_TAG_RE, "").replace(/^\n+/, "").trimStart();
 }
 
+function stripInternalPreamble(text: string): string {
+  const cleaned = stripDcpTags(text);
+  const looksLikeSetupLeak =
+    /^\s*The skill\s+`?[-\w]+`?\s+is loaded\./i.test(cleaned) ||
+    /^\s*Now I need to\b/i.test(cleaned) ||
+    /\n\s*Plan:\s*\n/i.test(cleaned) ||
+    /\n\s*The user said\s+["']/i.test(cleaned);
+
+  if (!looksLikeSetupLeak) return cleaned;
+
+  const userFacingStart = cleaned.match(
+    /(?:^|\n)(Hello[!,][\s\S]*|Hi(?:\s+-|[!,])[\s\S]*|Good (?:morning|afternoon|evening)[!,][\s\S]*)/i
+  );
+  return userFacingStart ? userFacingStart[1].trimStart() : cleaned;
+}
+
 function MarkdownMessage({ content }: MarkdownMessageProps) {
   return (
     <div className="msg-markdown">
-      <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripDcpTags(content)}</ReactMarkdown>
+      <ReactMarkdown remarkPlugins={[remarkGfm]}>{stripInternalPreamble(content)}</ReactMarkdown>
     </div>
   );
 }

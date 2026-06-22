@@ -42,7 +42,15 @@ const WORKSPACE_GUIDANCE =
   "collect information and complete sections, edit `roadmap.md` and tick the " +
   "matching items (`- [ ]` → `- [x]`). Keep it accurate — it drives the user's " +
   "progress bar. Do not invent new items; only check off existing ones (you may " +
-  "add a sub-item only if the user introduces genuinely new in-scope data).";
+    "add a sub-item only if the user introduces genuinely new in-scope data).";
+
+const VISIBLE_REPLY_GUARD =
+  "## Visible reply only\n" +
+  "Your visible assistant message must contain only the final user-facing reply. " +
+  "Do NOT include internal setup, planning, self-instructions, or tool narration. " +
+  "Never write phrases like `The skill is loaded`, `Now I need to`, `I will combine`, " +
+  "`The user said`, or a `Plan:` section. If you need to plan, keep it in reasoning; " +
+  "the answer bubble should start directly with the greeting, question, finding, or next action for the user.";
 
 // Idle timeout: max time with ZERO upstream activity before we give up.
 // This is reset on every chunk received from the engine's /event stream.
@@ -299,6 +307,10 @@ export async function POST(req: NextRequest): Promise<Response> {
           );
           await addLoadedContextBytes(sessionId, loadedBytes);
         }
+
+        // Last-position guard for Gemma-style models that may put planning into
+        // the final answer instead of the provider's reasoning field.
+        systemParts.push(VISIBLE_REPLY_GUARD);
 
         const system = systemParts.filter(Boolean).join("\n\n");
 

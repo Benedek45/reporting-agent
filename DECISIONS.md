@@ -132,6 +132,10 @@ and doesn't need to be re-researched or re-litigated.
 
 ### 6.4 Other UI features
 - Markdown rendering (react-markdown + remark-gfm). DCP tags stripped client-side before rendering.
+- Gemma 4 can still put setup/planning text into the final `content` field instead of
+  provider `reasoning`. The BFF injects a last-position visible-reply guard every turn,
+  and `MarkdownMessage` strips a narrow leading setup preamble pattern (e.g. "The skill
+  is loaded", "Now I need to", `Plan:`) before rendering.
 - Dark mode (CSS variables, persisted to localStorage, no flash).
 - Timestamps, pin-to-scrollbar-dots.
 - Welcome message client-side (not an opencode message — no endpoint for synthetic assistant messages).
@@ -198,6 +202,7 @@ Verified model ID: `gemma4-aws/Neural-ICE/Gemma-4-26B-A4B-it-NVFP4`. All agents 
 | Report download returned "Invalid file name" | UI sent `name=output/report.md` (slash) — route rejects path traversal | Changed to `name=report.md` (route has special-case) |
 | Docker engine boot `EROFS` | Vendored engine's `ensureGitignore()` writes to read-only `:ro` config mount | Patched to swallow all write errors (EROFS + PermissionDenied) |
 | Session-state torn-read crash | Concurrent read-modify-write on `.sessions/<id>` JSON | Atomic write (temp + rename) + per-session async lock |
+| Gemma setup/planning leaked into answer bubble | Model emitted setup/planning as visible `text` content, not `reasoning` | Last-position system guard + narrow MarkdownMessage setup-preamble stripping |
 
 ---
 

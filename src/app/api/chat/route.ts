@@ -15,6 +15,12 @@ const WORKSPACE_GUIDANCE =
   "Continue writing the report to `output/report.md`. " +
   "If you produce any other deliverable, call `present_file` with its absolute path.";
 
+const VISIBLE_REPLY_GUARD =
+  "Your visible assistant message must contain only the final user-facing reply. " +
+  "Do NOT include internal setup, planning, self-instructions, or tool narration. " +
+  "Never write phrases like `The skill is loaded`, `Now I need to`, `I will combine`, " +
+  "`The user said`, or a `Plan:` section.";
+
 export async function POST(req: NextRequest): Promise<Response> {
   try {
     const body = (await req.json()) as {
@@ -32,7 +38,7 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
 
     const { text: reply } = await sendMessage(sessionId, text, {
-      system: WORKSPACE_GUIDANCE,
+      system: `${WORKSPACE_GUIDANCE}\n\n${VISIBLE_REPLY_GUARD}`,
     });
 
     return Response.json({ reply });
