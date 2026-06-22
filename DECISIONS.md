@@ -190,6 +190,26 @@ Verified model ID: `gemma4-aws/google/gemma-4-E4B-it`. Custom providers use `@ai
 
 ---
 
+## 8b. Security — agent sandbox & SSRF (2026-06)
+
+Adversarial test ("make the agent escape"): the filesystem/shell sandbox held (no RCE,
+no host FS escape — `bash` denied, `external_directory: deny`, download path-traversal
+sanitized). But the agent's `webfetch` tool reached the app's own BFF via
+`host.docker.internal:3000` / `172.17.0.1:3000`, and since `/api/*` is unauthenticated and
+keyed only by `sessionId`, it read other sessions' data (cross-session leak / IDOR).
+
+Fixes:
+- **SSRF guard in `webfetch`** (vendored fork, always on): blocks internal hostnames + DNS-resolves
+  to reject loopback/private/link-local/CGNAT/cloud-metadata ranges (IPv4 + IPv6 incl. mapped).
+  Verified: internal refused, `https://example.com` still works.
+- **Optional BFF Basic Auth** (`src/middleware.ts`): no-op unless `APP_BASIC_AUTH_USER` +
+  `APP_BASIC_AUTH_PASS` set (app container only; never opencode/converter). Edge-safe.
+- **Network-layer egress filtering** for the engine container: still TODO (defense-in-depth;
+  the webfetch guard already closes the agent's only HTTP vector).
+
+Rule of thumb: the agent's own tools (especially `webfetch`) are part of the attack surface —
+treat any agent-reachable HTTP capability as hostile and guard internal targets.
+
 ## 9. AWS operational rules
 
 - The assistant has access to AWS credentials and can perform read-only checks (describe, list, get) at any time.

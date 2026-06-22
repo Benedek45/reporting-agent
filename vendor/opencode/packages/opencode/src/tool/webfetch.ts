@@ -5,6 +5,9 @@ import * as Tool from "./tool"
 import TurndownService from "turndown"
 import DESCRIPTION from "./webfetch.txt"
 import { isImageAttachment } from "@/util/media"
+// reporting-agent SSRF guard: node builtins for hostname/IP validation.
+import { isIP } from "node:net"
+import { lookup } from "node:dns/promises"
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
 const DEFAULT_TIMEOUT = 30 * 1000 // 30 seconds
@@ -34,6 +37,14 @@ export const WebFetchTool = Tool.define(
         Effect.gen(function* () {
           if (!params.url.startsWith("http://") && !params.url.startsWith("https://")) {
             throw new Error("URL must start with http:// or https://")
+          }
+
+          // reporting-agent SSRF guard: refuse internal/private/loopback/link-local
+          // targets so the web-fact-check tool can never reach the host app, the
+          // docker bridge, cloud metadata, or other internal services.
+          const ssrfBlock = yield* Effect.promise(() => checkUrlNotInternal(params.url))
+          if (ssrfBlock) {
+            throw new Error(ssrfBlock)
           }
 
           yield* ctx.ask({
@@ -154,6 +165,59 @@ export const WebFetchTool = Tool.define(
     }
   }),
 )
+
+// reporting-agent SSRF guard. Returns a human-readable block reason, or null if the
+// URL targets a public address. Resolves DNS so a public hostname that maps to a
+// private IP (DNS-rebinding) is also blocked. Never rejects — on parse/DNS failure it
+// returns null and lets the normal fetch path surface the error.
+async function checkUrlNotInternal(rawUrl: string): Promise<string | null> {
+  try {
+    const host = new URL(rawUrl).hostname.replace(/^\[|\]$/g, "").toLowerCase()
+    if (
+      host === "localhost" ||
+      host.endsWith(".localhost") ||
+      host === "host.docker.internal" ||
+      host === "gateway.docker.internal" ||
+      host.endsWith(".internal") ||
+      host === "metadata.google.internal"
+    ) {
+      return `Refusing to fetch internal host "${host}". Web fetch is for public internet sources only.`
+    }
+    const addresses: string[] = []
+    if (isIP(host)) addresses.push(host)
+    else for (const entry of await lookup(host, { all: true })) addresses.push(entry.address)
+    for (const ip of addresses) {
+      if (isBlockedAddress(ip)) {
+        return `Refusing to fetch "${host}" — it resolves to a private/loopback/link-local address (${ip}). Web fetch is for public internet sources only.`
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function isBlockedAddress(ip: string): boolean {
+  const kind = isIP(ip)
+  if (kind === 4) {
+    const o = ip.split(".").map(Number)
+    if (o[0] === 127) return true // loopback 127.0.0.0/8
+    if (o[0] === 10) return true // private 10.0.0.0/8
+    if (o[0] === 172 && o[1] >= 16 && o[1] <= 31) return true // private 172.16.0.0/12
+    if (o[0] === 192 && o[1] === 168) return true // private 192.168.0.0/16
+    if (o[0] === 169 && o[1] === 254) return true // link-local / cloud metadata 169.254.0.0/16
+    if (o[0] === 100 && o[1] >= 64 && o[1] <= 127) return true // CGNAT 100.64.0.0/10
+    if (o[0] === 0) return true // 0.0.0.0/8
+    return false
+  }
+  const v = ip.toLowerCase()
+  if (v === "::1" || v === "::") return true // loopback / unspecified
+  if (v.startsWith("fe80")) return true // link-local
+  if (v.startsWith("fc") || v.startsWith("fd")) return true // unique-local fc00::/7
+  const mapped = v.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)
+  if (mapped) return isBlockedAddress(mapped[1])
+  return false
+}
 
 function extractTextFromHTML(html: string) {
   let text = ""

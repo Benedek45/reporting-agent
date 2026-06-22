@@ -67,6 +67,11 @@ services:
       NODE_ENV: production
       CONVERTER_URL: http://converter:8000
       MAX_CONTEXT_FILE_BYTES: "200000"
+      # Optional BFF Basic Auth (audit C-1). NO-OP unless BOTH are set. Deliberately
+      # given ONLY to the app — never to opencode/converter — so an in-engine request
+      # cannot authenticate. Set in .env to enable before any networked deployment.
+      APP_BASIC_AUTH_USER: ${APP_BASIC_AUTH_USER:-}
+      APP_BASIC_AUTH_PASS: ${APP_BASIC_AUTH_PASS:-}
     ports:
       - "3000:3000" # the only port exposed to the user
     volumes:

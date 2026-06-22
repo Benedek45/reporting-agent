@@ -824,16 +824,48 @@ two parallel `general` subagents; live-verified; pushed):
    on-demand GPU instances. Scaling to a larger model uses the same wiring.
 - **`HANDOFF.md` removed** — `AGENTS.md` is the single source of truth.
 
-**SECURITY FLAG — BFF auth (audit C-1):** every `/api/*` route is currently
-**unauthenticated**. This is a KNOWN, ACCEPTED gap **while the app is in development**
-(single-operator, only `:3000` published, engine/converter internal). It is intentionally
-NOT fixed in this pass. **Before any multi-user or networked deployment**, add at minimum
-a shared-secret header check or Basic Auth in `src/middleware.ts`. Do not treat the app as
-safe to expose until this is done.
+**SECURITY — agent sandbox escape attempt (2026-06, adversarial test).** A user
+prompted the `compliance` agent to "try to escape". The filesystem/shell sandbox
+**held** (no RCE, no host FS escape: `bash` denied, `external_directory: deny`,
+`/api/download` path-traversal sanitized). But the agent found a **real cross-session
+data leak**: its `webfetch` tool (needed for fact-checking) could reach the app's own
+BFF at `http://host.docker.internal:3000` and `http://172.17.0.1:3000` (host published
+port + docker bridge gateway), and because `/api/*` is unauthenticated and keyed only by
+`sessionId`, it could read *other* sessions' chats/files/reports. Verified real:
+`GET /api/sessions` returned 200 with all session IDs from inside the engine container.
+
+**FIX (shipped + verified):**
+- **Layer 1 — SSRF guard in `webfetch`** (`vendor/opencode/packages/opencode/src/tool/webfetch.ts`,
+  always on). Before fetching, `checkUrlNotInternal()` parses the URL, blocks
+  `localhost`/`*.localhost`/`host.docker.internal`/`gateway.docker.internal`/`*.internal`/
+  `metadata.google.internal` by name, and **DNS-resolves** the host (catching DNS-rebinding)
+  to reject loopback `127/8` + `::1`, private `10/8`·`172.16/12`·`192.168/16`·`fc00::/7`,
+  link-local/cloud-metadata `169.254/16` + `fe80::/10`, CGNAT `100.64/10`, `0/8`, and
+  IPv4-mapped IPv6. **Verified live**: agent webfetch of `host.docker.internal:3000` and
+  `172.17.0.1:3000` both refused; `https://example.com` still succeeds (fact-checking intact).
+  Requires `docker compose build opencode`.
+- **Layer 2 — optional BFF Basic Auth** (`src/middleware.ts`, audit C-1). NO-OP unless BOTH
+  `APP_BASIC_AUTH_USER` + `APP_BASIC_AUTH_PASS` are set (dev default = off, unchanged flow).
+  When set, every page + `/api/*` requires Basic Auth; the browser prompts once and caches.
+  The vars are given **only to the `app` container** (never opencode/converter) and are never
+  emitted in any response body, so an in-engine request cannot authenticate or scrape them.
+  Edge-safe (`atob`, length-stable compare). Requires `docker compose build app`.
+- **Layer 3 — network egress (defense-in-depth, NOT yet shipped):** the engine can still
+  reach the host at the IP layer; only `webfetch` is guarded (it is the agent's only HTTP
+  tool, so the vector is closed). True network-level egress filtering (engine → internet yes,
+  engine → host/app no) needs an external firewall/proxy and remains a TODO.
+
+**Remaining (pre-networked-deployment):** turn ON Basic Auth (set the two env vars); add
+network-layer egress restriction; consider per-session authz on `/api/*` (not just a shared
+secret) if multi-tenant.
 
 **Deferred** (not yet built):
 
-- BFF auth (see SECURITY FLAG above) — promote to a pre-deployment blocker.
+- BFF auth is now BUILT (optional Basic Auth in `src/middleware.ts`) but OFF by default —
+  set `APP_BASIC_AUTH_USER`/`APP_BASIC_AUTH_PASS` to enable before any networked deployment.
+- Network-layer egress restriction for the engine container (the `webfetch` SSRF guard
+  already closes the agent's HTTP vector at the app layer; IP-layer filtering is the
+  remaining defense-in-depth item).
 - Remove the superseded `doc-ingest` / `doc-generate` stubs.
 - Re-enable the structured interactive `question` tool if desired (now possible
   over SSE, but currently plain-text Q&A is more consumer-friendly).
