@@ -103,11 +103,10 @@ export function cleanVisibleReply(text: string, streaming = false): string {
     return cleaned.slice(label.index + label[0].length).trimStart();
   }
 
-  // 5. Pure planning dump, no greeting, no <reply>. While streaming, hide it so
-  //    the Thinking indicator shows instead of raw planning. On a finalized
-  //    message, returning the text is less bad than a blank bubble (and the
-  //    model is instructed to wrap, so this path is the rare non-compliant case).
-  return streaming ? "" : cleaned;
+  // 5. Pure planning dump, no greeting, no <reply>. Hide entirely — the tools
+  //    and system message already tell the user what happened, and a blank
+  //    bubble is far less harmful than leaking internal monologue.
+  return "";
 }
 
 function MarkdownMessage({ content, streaming = false }: MarkdownMessageProps) {
