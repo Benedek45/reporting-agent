@@ -14,10 +14,10 @@
 #   ./scripts/update-context-manager.ps1            # pinned ref below
 #   ./scripts/update-context-manager.ps1 -Ref main  # latest on main
 param(
-  # Pinned to the context-manager commit that adds the guaranteed hard-cap
-  # mechanical floor + fixes Set/Map decision serialization (builds on the
-  # 2221b92 system.transform empty-turn guard). See AGENTS.md §7.
-  [string]$Ref = "3e7b14b96"
+  # Pinned to the context-manager commit that estimates context size from
+  # message content instead of provider per-turn usage metadata (builds on the
+  # hard-cap floor + system.transform empty-turn guard). See AGENTS.md §7.
+  [string]$Ref = "48a187a963066a7b9247c080a68f466f5db45235"
 )
 $ErrorActionPreference = "Stop"
 

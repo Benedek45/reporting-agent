@@ -291,7 +291,7 @@ goals/
   goal_environment_qa.md   visible developer/operator goal for environment/tool/workspace Q&A
   goal_test.md             developer-only tool self-test goal (legacy)
   roadmaps/                per-goal detailed checklists (roadmap_csrd_esrs.md, roadmap_esg.md)
-scripts/update-context-manager.{ps1,sh}  rebuild .opencode/plugins/context-manager.js
+scripts/update-context-manager.{ps1,sh}  rebuild .opencode/context-manager.js
                            from the EXTERNAL Benedek45/context-manager repo (pinned SHA)
 scripts/enable-dcp.{sh,ps1}  DEPRECATED: superseded by the context-manager plugin
 opencode.json              opencode runtime config (model, agents, skills, MCP, permissions)
@@ -302,6 +302,7 @@ prompts/
 .opencode/skills/
   csrd-esrs/SKILL.md       + assets/report-template.md
   esg-reporting/SKILL.md   + assets/report-template.md
+.opencode/context-manager.js  MIT clean-room context manager bundle (explicit plugin tuple)
 .opencode/plugins/
   report-compaction.js     MIT plugin: inject goal+STATUS+[DATA NEEDED] at compaction
 mcp/
@@ -514,12 +515,14 @@ and picking up stray configs — the original collision cause).
   button (`/api/context`) injects a whole file's markdown into the chat, capped by
   `MAX_CONTEXT_FILE_BYTES` (default 200 000); larger files stay on-demand-only.
 
-- **Context management.** Shipped default (MIT): two plugins auto-discovered from
-  `.opencode/plugins/`:
-  - **`context-manager.js`** — per-request cascade (dedup → stale-error purge →
-    observation mask/offload with a cache-aware Cost-ROI gate) plus a model-driven
-    `compress` tool for structured summarization of closed conversation sections.
-  - **`report-compaction.js`** — hooks `experimental.session.compacting` to inject
+- **Context management.** Shipped default (MIT): one explicit context-manager plugin
+  plus one auto-discovered compaction plugin:
+  - **`.opencode/context-manager.js`** — loaded via explicit plugin tuple in
+    `opencode.json` so it can receive per-model options (important for Gemma's
+    131K served window). It performs per-request cascade (dedup → stale-error purge →
+    observation mask/offload with a cache-aware Cost-ROI gate), hard-cap pruning, and a
+    model-driven `compress` tool for structured summarization of closed conversation sections.
+  - **`.opencode/plugins/report-compaction.js`** — hooks `experimental.session.compacting` to inject
     the active goal + report STATUS + every `[DATA NEEDED]` so they survive
     opencode native compaction (the last-resort fireguard).
   The `compress` tool is non-interactive (no `context.ask`) so it cannot deadlock
@@ -527,18 +530,23 @@ and picking up stray configs — the original collision cause).
   `/workspaces/.context-manager/dcp/<sessionId>.json` (shared volume) and is
   cleaned up by `deleteSession()`. **`context-manager` is a SEPARATE project**
   (`Benedek45/context-manager`, MIT, clean-room — no AGPL source). This repo only
-  CONSUMES the built bundle: rebuild `.opencode/plugins/context-manager.js` with
+  CONSUMES the built bundle: rebuild `.opencode/context-manager.js` with
   `scripts/update-context-manager.{ps1,sh}` (clone → `bun build` the opencode adapter
-  → drop the single file), pinned at commit **`3e7b14b9`** (adds a guaranteed hard-cap
-  mechanical floor at 92% of context + fixes Set/Map decision serialization; builds on
-  the `2221b92` system.transform empty-turn guard). **Plugin-hook gotcha:**
+  → drop the single file), pinned at commit **`48a187a`** (fixes nudge/hard-cap context
+  estimation to use message content rather than provider per-turn token usage; builds on
+  `3e7b14b9` hard-cap + Set/Map serialization fix and the `2221b92` system.transform
+  empty-turn guard). **Plugin-hook gotcha:**
   opencode invokes `experimental.chat.system.transform` (and the other hooks) with a
   `Provider.Model` whose model-id field is **`model.id`** (NOT `.modelID`; provider is
   `model.providerID`, window is `model.limit.context`). A plugin MUST read those and
   MUST NOT throw inside a hook — a thrown exception is run via `Effect.promise` with no
   try/catch, becomes a die → `halt` sets `assistantMessage.error` and the turn produces
   an **empty assistant message** (the BFF does not surface `Session.Event.Error`, so it
-  looks like a silent empty bubble). See §12.
+  looks like a silent empty bubble). **Token-estimation gotcha:** do NOT use provider
+  `msg.tokens.input` to estimate a single message's size. For assistant messages that
+  field is the full prompt/context used for that turn, so summing it across history makes
+  the nudge estimate grow cumulatively. Estimate projected context from serialized parts;
+  keep provider token metadata only for cache/telemetry decisions. See §12.
 
 ## 8. Per-session workspace isolation
 
@@ -714,9 +722,9 @@ type-clean (zero errors in any edited file):
 - **Clean-room context manager wired into opencode (gap-6 implementation).** The MIT
   clean-room context-management plugin was developed in a separate private repo
   (`Benedek45/context-manager`; local ignored source at `dcp-rewrite/`) and bundled into
-  this app as `.opencode/plugins/context-manager.js` (single-file Bun ESM bundle; no AGPL
-  reference source committed). It auto-loads through opencode's `.opencode/plugins`
-  discovery and registers a model-driven `compress` tool plus mechanical context pruning
+  this app as a single-file Bun ESM bundle (now `.opencode/context-manager.js`, loaded
+  explicitly via `opencode.json` so it can receive per-model options; it originally lived
+  under `.opencode/plugins/`). It registers a model-driven `compress` tool plus mechanical context pruning
   hooks (`experimental.chat.messages.transform`, a no-op
   `experimental.chat.system.transform`, `experimental.text.complete`, events, and
   `/dcp-compress`). The plugin uses a pure-core
@@ -738,10 +746,11 @@ type-clean (zero errors in any edited file):
 Also done (2026-06, context-manager externalized + `system.transform` empty-turn fix —
 two parallel `general` subagents; live-verified; pushed):
 - **Context-manager is now a SEPARATE project.** `Benedek45/context-manager` is the source
-  of truth; this repo CONSUMES only the built bundle `.opencode/plugins/context-manager.js`,
+  of truth; this repo CONSUMES only the built bundle `.opencode/context-manager.js`,
   rebuilt by `scripts/update-context-manager.{ps1,sh}` (clone → `bun build` the opencode
-  adapter → drop the single file; no plugin source kept here). Pinned at context-manager
-  commit **`2221b92`**. `dcp-rewrite/` (if present) is a gitignored throwaway clone.
+  adapter → drop the single file; no plugin source kept here). Current pinned context-manager
+  commit: **`48a187a`**. `dcp-rewrite/` / `dcp-fix-token-estimate/` (if present) are ignored
+  throwaway clones.
 - **ROOT CAUSE of the empty-assistant-response regression** (every turn returned 0 chars with
   the newer plugin builds): the plugin's `experimental.chat.system.transform` hook read
   `model.modelID`, but vendored opencode invokes that hook with a `Provider.Model` whose id
@@ -761,6 +770,13 @@ two parallel `general` subagents; live-verified; pushed):
   typecheck clean.** Live-verified here (production stack): turn-1 + multi-turn (incl. a
   `time_get_current_time` tool turn + long messages) all non-empty; the 72,674-byte bundle
   rebuilt from the pinned commit reproduces identically.
+- **FIX (context-manager `3e7b14b9`→`48a187a`):** the compression nudge/hard-cap estimate
+  was cumulative because `estimateMessageTokens()` used provider token metadata when present.
+  For assistant messages, `tokens.input` is the full prompt/context used by that turn, not the
+  size of the message. Summing it across history made the estimate grow like a lifetime counter.
+  Fix: always estimate message size from serialized parts; keep provider token metadata only for
+  cache/telemetry decisions. Repo: **123 tests pass, typecheck clean**; live app smoke after
+  bundle rebuild returned a non-empty chat reply and `compress` tool remained loaded.
 - **DURABLE GOTCHA — run production, not the DEV overlay.** Start the stack with
   `docker compose -f docker-compose.yml up -d`. Plain `docker compose up` auto-merges
   `docker-compose.override.yml` → app runs `next dev` → **crashes `EACCES` on `/app/.next/cache`
