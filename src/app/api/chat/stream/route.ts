@@ -15,6 +15,7 @@ import {
   sessionDirectory,
   readSessionState,
   readRoadmapState,
+  renderRoadmapForContext,
   readUploadMarkdown,
   addLoadedContextBytes,
   recordReadDocBytes,
@@ -313,6 +314,13 @@ export async function POST(req: NextRequest): Promise<Response> {
         // survives compaction (re-injected each turn on top of compacted history).
         // The exact workspace_dir is baked in so the roadmap tool gets the right path.
         systemParts.push(workspaceGuidance(directory));
+
+        // The roadmap checklist itself — injected EVERY turn so the full plan is
+        // in context from the first turn and the current done/open state stays
+        // visible. This is what makes the agent keep the roadmap updated without
+        // having to call roadmap_status to discover what is left.
+        const roadmapContext = await renderRoadmapForContext(sessionId);
+        if (roadmapContext) systemParts.push(roadmapContext);
 
         systemParts.push(
           "Reply in the same language the user writes in unless they ask otherwise."

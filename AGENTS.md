@@ -495,6 +495,18 @@ and picking up stray configs — the original collision cause).
     `readRoadmapState` also keeps the original 56-item denominator if a rogue
     rewrite ever shrinks the live file (defense in depth). Verified e2e: a turn
     went 0/56→3/56 via `roadmap_mark_done` with the denominator intact.
+    **The live checklist itself is injected into the per-turn `system` EVERY
+    turn** (`renderRoadmapForContext` in `workspace.ts`, pushed in
+    `chat/stream/route.ts` + `chat/route.ts` right after `workspaceGuidance`): the
+    full roadmap with current `[x]`/`[ ]` state is in context from the first turn,
+    so the model sees the whole plan and what remains **without** having to call
+    `roadmap_status` to discover it — weaker models (Gemma 4) reliably forget to.
+    Root-caused on a real session (`ses_110ce82b…`): the agent had called
+    `roadmap_mark_done` only **once** and `roadmap_status` **zero** times across 6
+    turns (1/51 marked) because it never saw the checklist. After injecting it,
+    one data-rich first turn marked **4/56** — precisely the engagement-setup items
+    supplied (entity, period, boundary, framework), correctly leaving unsupplied
+    items unchecked, no `output/roadmap.md`, denominator intact.
   - `time` (**enabled**): `get_current_time` — zero-dependency stdio MCP. It only
     returns the current date/time; it never schedules or auto-fires. Separately,
     the BFF injects the current date/time via per-turn `system` on the first user

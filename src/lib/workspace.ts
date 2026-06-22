@@ -760,6 +760,42 @@ export function parseRoadmap(text: string): RoadmapState | null {
 }
 
 /**
+ * Renders the session's LIVE roadmap as a compact markdown checklist for
+ * injection into the per-turn system context. This puts the full plan in the
+ * agent's context from the first turn and keeps the current done/open state
+ * visible every round — so the model does not have to call `roadmap_status` to
+ * discover what is left (weaker models reliably forget to). Returns "" when the
+ * session has no roadmap.
+ */
+export async function renderRoadmapForContext(
+  sessionId: string
+): Promise<string> {
+  const state = await readRoadmapState(sessionId);
+  if (!state || state.totalSteps === 0) return "";
+
+  const lines: string[] = [];
+  lines.push(
+    `## Progress roadmap — ${state.doneSteps}/${state.totalSteps} complete (${state.pct}%)`
+  );
+  lines.push(
+    "This is your working checklist for the whole engagement; it is included " +
+      "every turn so you always know the plan and what remains. `[x]` = done, " +
+      "`[ ]` = still open. Whenever you have collected an item's data from a " +
+      "sourced document AND reflected it in `output/report.md`, mark it the SAME " +
+      "turn by calling the `roadmap_mark_done` tool with short descriptions of " +
+      "the items you just finished. Never fabricate data to tick a box, and do " +
+      "not edit `roadmap.md` yourself."
+  );
+  for (const sec of state.sections) {
+    lines.push("", `### ${sec.title}`);
+    for (const st of sec.steps) {
+      lines.push(`- [${st.done ? "x" : " "}] ${st.label}`);
+    }
+  }
+  return lines.join("\n");
+}
+
+/**
  * Returns the goal text for a session.
  * Reads from SessionState.goalText first; falls back to reading goal.md.
  */

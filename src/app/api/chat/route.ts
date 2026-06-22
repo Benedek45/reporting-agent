@@ -7,7 +7,10 @@ export const runtime = "nodejs";
 
 import { NextRequest } from "next/server";
 import { sendMessage } from "@/lib/opencode";
-import { sessionDirectory } from "@/lib/workspace";
+import {
+  sessionDirectory,
+  renderRoadmapForContext,
+} from "@/lib/workspace";
 
 // Minimal workspace guidance injected on the legacy non-streaming path so the
 // agent is aware of the merged folder layout and deliverable conventions.
@@ -50,10 +53,17 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
 
     const directory = await sessionDirectory(sessionId);
+    const roadmapContext = await renderRoadmapForContext(sessionId);
 
-    const { text: reply } = await sendMessage(sessionId, text, {
-      system: `${workspaceGuidance(directory)}\n\n${VISIBLE_REPLY_GUARD}`,
-    });
+    const system = [
+      workspaceGuidance(directory),
+      roadmapContext,
+      VISIBLE_REPLY_GUARD,
+    ]
+      .filter(Boolean)
+      .join("\n\n");
+
+    const { text: reply } = await sendMessage(sessionId, text, { system });
 
     return Response.json({ reply });
   } catch (err) {
