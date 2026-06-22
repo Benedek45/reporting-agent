@@ -1,0 +1,208 @@
+# DECISIONS.md — reporting-agent
+
+Permanent archive of architecture decisions, design choices, tool selections,
+and key lessons. Each decision is recorded once so it survives context compaction
+and doesn't need to be re-researched or re-litigated.
+
+---
+
+## 1. Architecture
+
+### 1.1 Agentic engine = vendored opencode (MIT), run headless
+- **Decision:** Use opencode as a headless backend (`opencode serve`), driven by our own web UI over its REST API. Do NOT build our own agent loop.
+- **Rationale:** Compliance reporting is "read files + write files + web search in an agentic loop" — opencode already has the agentic loop, tool calling, permissions, skills, and MCP host.
+- **Vendored fork:** Source committed under `vendor/opencode` (upstream: `anomalyco/opencode`, branch `dev`, pinned commit `5d0f86606a`, MIT license). Modifiable; upstream `.git` removed so it's plain files. See AGENTS.md §4 for patch/rebuild policy.
+
+### 1.2 UI stack = single Next.js App Router app (UI + BFF)
+- **Decision:** One Next.js app serves both the browser UI and the backend API routes (BFF). The BFF talks to opencode over `fetch` (REST), NOT the `@opencode-ai/sdk`.
+- **Rationale:** Avoid coupling to the SDK's generated shape; the 5 REST endpoints we use are stable. Single deployable artifact.
+
+### 1.3 Deployment shape = 2-service Docker Compose
+- **Decision:** `app` (Next.js, port 3000, the ONLY published port) + `opencode` (engine, port 4096, internal only). Shared named `workspaces` volume.
+- **Rationale:** One self-contained application. `docker compose -f docker-compose.yml up --build` → open http://localhost:3000. The DEV overlay (`docker-compose.override.yml`) is for host dev only and must NOT be auto-merged in production (use `-f docker-compose.yml`).
+
+### 1.4 Per-session workspace isolation
+- **Decision:** Each session gets `/workspaces/<uuid>/` containing `output/` (report + uploads) and the opencode session binds to it via `?directory=/workspaces/<uuid>` on `POST /session`.
+- **Rationale:** `external_directory: deny` sandboxes the agent. Skill report templates are copied into the workspace at init (the agent cannot read them cross-directory).
+
+---
+
+## 2. Model & secrets
+
+### 2.1 Production model = `opencode-go/deepseek-v4-flash`
+- **Decision:** Paid, zero-retention (~$0.14/$0.28 per 1M tokens). Provider is `opencode-go`.
+- **Negative decision:** Do NOT use `opencode/deepseek-v4-flash-free` — its data may be used for training, unacceptable for confidential ESG/CSRD client documents.
+
+### 2.2 API key management
+- `OPENCODE_GO_API_KEY` in `.env` (gitignored). Injected ONLY into the `opencode` container via `docker-compose.yml` env_file. The `app` container gets non-secret env only.
+
+### 2.3 opencode REST endpoints the BFF uses
+- Base: `http://opencode:4096` (internal compose network)
+- `POST /session?directory=<abs path>` → `Session{id, directory, ...}` (directory is a QUERY PARAM, not body field)
+- `POST /session/:id/message` body `{agent, model:{providerID, modelID}, parts:[{type:"text",text}]}` (model is an OBJECT, not a string)
+- `POST /session/:id/prompt_async?directory=` → `204` (fire-and-forget, used for streaming)
+- `GET /event?directory=` → SSE stream (MUST have same `?directory=` as the session or you receive NONE of its events — **this was a real debug cost**)
+- `POST /session/:id/abort?directory=` (stop), `POST /session/:id/revert?directory=` (edit/rewind)
+- `GET /session/:id`, `GET /session/:id/todo`, `GET /provider`
+
+---
+
+## 3. Agents, skills, MCP
+
+### 3.1 Two agents defined in `opencode.json`
+- `compliance` (primary, default): interviews, requests docs, drafts `output/report.md`, fact-checks. Denies `bash`, `external_directory`, `question` (see 3.6).
+- `fact-checker` (subagent): read-only; verifies figures via webfetch. Denies `edit`, `bash`.
+
+### 3.2 Skills are loaded on-demand by the native `skill` tool
+- `csrd-esrs`: ESRS structure, double materiality, topical standards. Self-contained SKILL.md + `assets/report-template.md` (copied into workspace at init).
+- `esg-reporting`: GRI-aligned structure, 5-section report template.
+- Adding a goal = drop a new `goals/goal_*.md` (frontmatter `id/title/agent/skill/template/roadmap` + body) — no code change.
+
+### 3.3 Custom MCP servers (zero-dependency, stdio, launched with `bun`)
+- `workspace` (enabled): `delete_file` — deletes a file + its `.md` sidecar under `/workspaces`. Needed because opencode has no built-in delete tool and bash is denied.
+- `time` (enabled): `get_current_time` — returns current date/time only, never schedules.
+- `fact-check` (enabled): `verify_claim` — Tavily-backed; returns NEEDS_CONFIG without `FACTCHECK_API_KEY`.
+
+### 3.4 Superseded MCP stubs
+- `doc-ingest`: superseded by the `converter` service (MarkItDown auto-converts uploads to Markdown).
+- `doc-generate`: superseded by `converter /render` (markdown → PDF via weasyprint/BSD; → DOCX via htmldocx+python-docx/MIT). Keep the stubs but keep them `enabled: false`.
+
+### 3.5 `converter` service (separate compose service, internal port 8000)
+- MarkItDown (Microsoft, MIT): `POST /convert` (file → Markdown). Runs automatically at upload.
+- `POST /render` ({markdown, format:"pdf"|"docx"} → binary). PDF via weasyprint (BSD), DOCX via htmldocx+python-docx (MIT). All MIT/BSD — business-safe.
+
+### 3.6 No interactive `question` tool
+- **Decision:** `permission.question: deny` for the `compliance` agent. The tool BLOCKS the synchronous `POST /message` call, hanging the request. The agent asks questions in plain text (the chat IS the Q&A loop). Re-enabling requires the async/SSE path (now built).
+
+---
+
+## 4. File handling & uploads
+
+### 4.1 Automatic document-to-Markdown conversion on upload
+- Non-text files (PDF, DOCX, XLSX, HTML, etc.) are sent to the `converter` service at upload time. A `.md` sidecar is written beside the original. The model only ever reads text.
+- `isAlreadyText()` skips conversion for `.md/.txt/.csv/` etc.
+
+### 4.2 Files live in the environment, not model context
+- Uploads go to `/workspaces/<id>/output/`. The agent reads them ON DEMAND via `read`/`grep`/`list`. Wholesale context loading is OPT-IN via the "Load full file into context" button (capped by `MAX_CONTEXT_FILE_BYTES`, default 200,000).
+- This keeps tokens/cost lean — a 200-page doc is navigated, not dumped.
+
+### 4.3 Delete rule
+- A file is **directly deletable** only if no message has been sent since it was uploaded (`canDeleteDirectly`). After that, the user must **ask the model** to delete it (it calls `workspace_delete_file` MCP).
+
+### 4.4 File replacement
+- Re-uploading the same filename replaces it and sends a **unified diff** to the agent. Old content is captured BEFORE overwrite (a baseline-capture bug was found and fixed for text files).
+
+### 4.5 Download / export in multiple formats
+- Every environment file has a `⋯` menu offering download as original, `.md`, `.pdf`, `.docx` (via the converter `/render` for md→PDF/DOCX). Verified by magic bytes (`%PDF`, `PK`).
+
+---
+
+## 5. Context management
+
+### 5.1 Plugin-based, two layers
+- **Default (MIT, bundled):** opencode's native compaction + our `report-compaction.js` plugin (re-injects goal + report STATUS + every `[DATA NEEDED]` at compaction so they survive).
+- **Context-manager (MIT, SEPARATE project `Benedek45/context-manager`):** configured as a `.opencode/plugins/` bundle, loaded by opencode's plugin auto-discovery. This repo CONSUMES only the built bundle; the source is maintained externally. Rebuild via `scripts/update-context-manager.{ps1,sh}` (pinned commit `3e7b14b9` — adds a guaranteed hard-cap mechanical floor at 92% of context + fixes Set/Map decision serialization; builds on the `2221b92` system.transform empty-turn guard). When adopting a new context-manager commit, verify it does NOT reintroduce a throw in `onSystemTransform` (empties turns) and that any new `CoreState` Set/Map field is initialized in `deserializeState` with `?? []` (old on-disk state must not cause an undefined-throw).
+
+### 5.2 Plugin hook gotcha (learned from empty-response debug)
+- opencode invokes `experimental.chat.system.transform` with a `Provider.Model` whose id field is `model.id` (NOT `.modelID`), provider is `model.providerID`, window is `model.limit.context`. Proof: `vendor/opencode/packages/opencode/src/session/llm/request.ts:69-73` and `provider/provider.ts:1018-1033`.
+- A plugin that reads `model.modelID` gets `undefined` → `undefined.toLowerCase()` throws → `Effect.promise` with no try/catch → die → empty assistant message.
+- The context-manager fix at `2221b92` null-guards `isInternalModel` and wraps `onSystemTransform` in try/catch. A read-only optimization hook MUST NEVER be able to empty a user turn.
+
+### 5.3 Compaction hook
+- `experimental.session.compacting` receives `{ sessionID }` and outputs `{ context:[], prompt }`. Our `report-compaction.js` pushes domain-preservation guidance into `output.context`.
+
+---
+
+## 6. UI design decisions
+
+### 6.1 Three-region chat layout
+- Left: Documents sidebar (Environment / Output groups)
+- Center: Streaming chat (consumer-chat composer, pill input)
+- Right: Context meter (single segmented bar) + Todo panel + Report preview
+
+### 6.2 Streaming via SSE (`/api/chat/stream`)
+- BFF opens `GET /event?directory=<session dir>` (the `?directory=` is critical — see §2.3).
+- Frames: `text`, `reasoning`, `tool`, `todos`, `status`, `usage`, `done`, `error`.
+- Reasoning routed to Thinking box; tools to a single expandable activity line per turn.
+- `session.idle` terminates; idle-based timeout (5 min of silence) as safety net.
+
+### 6.3 Context meter — approximate breakdown
+- opencode exposes only cumulative tokens + model context limit. No per-category API. The BFF computes: Reasoning (from `tokens.reasoning`), Documents (from tracked loaded/read bytes ÷ 4), System & tools (constant baseline), Conversation (remainder). All four clamped to sum to `usedTokens` (waterfall allocation).
+
+### 6.4 Other UI features
+- Markdown rendering (react-markdown + remark-gfm). DCP tags stripped client-side before rendering.
+- Dark mode (CSS variables, persisted to localStorage, no flash).
+- Timestamps, pin-to-scrollbar-dots.
+- Welcome message client-side (not an opencode message — no endpoint for synthetic assistant messages).
+- Goal body injected into per-turn `system` context, NOT shown as a visible file.
+
+---
+
+## 7. Local model deployment (Gemma 4 E4B on AWS vLLM)
+
+### 7.1 Instance & infrastructure
+- **Target:** g5.xlarge (A10G 24GB), eu-central-1, **ON-DEMAND** (~$1.21/hr). Spot was repeatedly reclaimed.
+- **Security group:** `gemma4-vllm-sg` (sg-0ef072c9e50e1cf42), TCP 22 + 8000.
+- **SSH key:** `D:\AGI_gent\gemma4-vllm-key.pem` (gitignored).
+- **Quota:** Running On-Demand G and VT vCPU = 4.0. g6e.xlarge for larger models also fits at 4 vCPU.
+- **Currently TERMINATED** — Gemma is offline.
+
+### 7.2 vLLM command (REQUIRED for streaming tool calls)
+```
+vllm serve google/gemma-4-E4B-it \
+  --host 0.0.0.0 --port 8000 \
+  --max-model-len 32768 --gpu-memory-utilization 0.90 \
+  --reasoning-parser gemma4 --tool-call-parser gemma4 --enable-auto-tool-choice \
+  --chat-template /home/ec2-user/tool_chat_template_gemma4.jinja \
+  --api-key $GEMMA_API_KEY
+```
+The `--chat-template` flag downloads from `https://raw.githubusercontent.com/vllm-project/vllm/main/examples/tool_chat_template_gemma4.jinja`. Without it, streaming tool calls leak raw `<|tool_call>...</|tool_call>` tokens.
+
+### 7.3 Provider wiring in opencode.json
+```json
+"gemma4-aws": {
+  "npm": "@ai-sdk/openai-compatible",
+  "name": "Gemma 4 (AWS vLLM)",
+  "options": { "apiKey": "{env:GEMMA_API_KEY}", "baseURL": "{env:GEMMA_BASE_URL}" },
+  "models": { "google/gemma-4-E4B-it": { "name": "Gemma 4 E4B", "limit": {"context":32768,"output":8192} } }
+}
+```
+Verified model ID: `gemma4-aws/google/gemma-4-E4B-it`. Custom providers use `@ai-sdk/openai-compatible` npm package — built-in provider slots cannot be overridden.
+
+### 7.4 Genuine limitations (architecture/capability, not infrastructure)
+- Intermittent empty turns (reasoning-only, no final answer). Likely a Gemma 4 thinking-mode quirk.
+- Weak document reading at E4B scale (4.5B effective). Could not follow tool instructions (claimed "can't read" despite .md sidecars). The 26B A4B MoE is the recommended production candidate for compliance workloads.
+
+---
+
+## 8. Key bugs found and fixed
+
+| Bug | Root cause | Fix |
+|---|---|---|
+| Streaming returned 0 bytes | `/event` opened without `?directory=` → engine pre-filters, delivers no events | Pass `?directory=/workspaces/<uuid>` to both `prompt_async` and `/event` |
+| Empty response after plugin update | `experimental.chat.system.transform` read `model.modelID` (undefined) → throw → die → halt | Null-guard `isInternalModel`; wrap `onSystemTransform` in try/catch (`2221b92`) |
+| Load-into-context blocked every file | `MAX_CONTEXT_FILE_BYTES` in `.env` but NOT in `docker-compose.yml` app env block → `Number("")=0` | Added to compose env; hardened `??` → `||` fallback |
+| Context breakdown showed Documents > total after compression | `documentBytes` is cumulative lifetime counter, never shrinks on compaction | Clamped waterfall allocation (all four buckets always sum to `usedTokens`) |
+| Question tool hung POST /message | `question` tool blocks synchronously, BFF uses the sync endpoint | Denied `question` permission; agent asks in plain text |
+| Report download returned "Invalid file name" | UI sent `name=output/report.md` (slash) — route rejects path traversal | Changed to `name=report.md` (route has special-case) |
+| Docker engine boot `EROFS` | Vendored engine's `ensureGitignore()` writes to read-only `:ro` config mount | Patched to swallow all write errors (EROFS + PermissionDenied) |
+| Session-state torn-read crash | Concurrent read-modify-write on `.sessions/<id>` JSON | Atomic write (temp + rename) + per-session async lock |
+
+---
+
+## 9. AWS operational rules
+
+- The assistant has access to AWS credentials and can perform read-only checks (describe, list, get) at any time.
+- **Never submit quota requests, launch instances, terminate resources, modify security groups, or change any AWS settings without an explicit instruction from the user.** Prepare and show the command first; wait for approval.
+- Instance launches and quota requests are billable/irreversible actions — they require explicit user sign-off every time.
+
+## 10. Repository conventions
+
+- `AGENTS.md` is the single source of truth for living architecture/rules.
+- `DECISIONS.md` (this file) is the permanent archive of settled decisions.
+- `conventional commits` (`type(scope): summary`). No emojis.
+- TypeScript strict, no `any`. Server-only code kept out of client components.
+- `TODO(scaffold)` and `TODO(harden)` are the only sanctioned placeholders.
+- Secrets only in `.env` (gitignored). Never commit API keys, tokens, or credentials.
+- `vendor/opencode/bun.lock` intentionally NOT committed — the Docker image installs fresh.
+- Run the stack with `docker compose -f docker-compose.yml up -d` (production). Plain `docker compose up` auto-merges the DEV overlay → `EACCES` crash in `next dev`.

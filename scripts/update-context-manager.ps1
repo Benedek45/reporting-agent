@@ -14,9 +14,10 @@
 #   ./scripts/update-context-manager.ps1            # pinned ref below
 #   ./scripts/update-context-manager.ps1 -Ref main  # latest on main
 param(
-  # Pinned to the context-manager commit that fixes the system.transform
-  # empty-turn bug (guards the undefined model.id read). See AGENTS.md §7.
-  [string]$Ref = "2221b92cd7e7e00f6291a5f39981e9817edd3166"
+  # Pinned to the context-manager commit that adds the guaranteed hard-cap
+  # mechanical floor + fixes Set/Map decision serialization (builds on the
+  # 2221b92 system.transform empty-turn guard). See AGENTS.md §7.
+  [string]$Ref = "3e7b14b96"
 )
 $ErrorActionPreference = "Stop"
 

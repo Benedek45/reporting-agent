@@ -529,7 +529,9 @@ and picking up stray configs — the original collision cause).
   (`Benedek45/context-manager`, MIT, clean-room — no AGPL source). This repo only
   CONSUMES the built bundle: rebuild `.opencode/plugins/context-manager.js` with
   `scripts/update-context-manager.{ps1,sh}` (clone → `bun build` the opencode adapter
-  → drop the single file), pinned at commit **`2221b92`**. **Plugin-hook gotcha:**
+  → drop the single file), pinned at commit **`3e7b14b9`** (adds a guaranteed hard-cap
+  mechanical floor at 92% of context + fixes Set/Map decision serialization; builds on
+  the `2221b92` system.transform empty-turn guard). **Plugin-hook gotcha:**
   opencode invokes `experimental.chat.system.transform` (and the other hooks) with a
   `Provider.Model` whose model-id field is **`model.id`** (NOT `.modelID`; provider is
   `model.providerID`, window is `model.limit.context`). A plugin MUST read those and
@@ -797,13 +799,29 @@ two parallel `general` subagents; live-verified; pushed):
   `@ai-sdk/openai-compatible`, baseURL from `{env:GEMMA_BASE_URL}`, apiKey from
   `{env:GEMMA_API_KEY}`, and model `google/gemma-4-E4B-it` with limit `{context:32768,
   output:8192}`. The verified full model id is `gemma4-aws/google/gemma-4-E4B-it`.
-  Docker Compose injects `GEMMA_API_KEY` and `GEMMA_BASE_URL` only into the `opencode`
-  container; `.env` is gitignored. The BFF/app selects the requested chat model via
-  `OPENCODE_MODEL` (default `opencode-go/deepseek-v4-flash`; set to
-  `gemma4-aws/google/gemma-4-E4B-it` for a browser/UI Gemma test). Verified direct
-  opencode prompt and a `compliance` agent smoke test both returned non-empty Gemma
-  responses. The normal production default remains `opencode-go/deepseek-v4-flash`;
-  Gemma is available for explicit tests until intentionally promoted.
+   Docker Compose injects `GEMMA_API_KEY` and `GEMMA_BASE_URL` only into the `opencode`
+   container; `.env` is gitignored. The BFF/app selects the requested chat model via
+   `OPENCODE_MODEL` (default `opencode-go/deepseek-v4-flash`; set to
+   `gemma4-aws/google/gemma-4-E4B-it` for a browser/UI Gemma test). Verified direct
+   opencode prompt and a `compliance` agent smoke test both returned non-empty Gemma
+   responses. **The instance is currently TERMINATED** (Gemma is offline; `GEMMA_BASE_URL`
+   points to the dead IP `18.196.82.12`). To re-deploy: launch a g5.xlarge **on-demand**
+   in eu-central-1, run the vLLM command above, update `GEMMA_BASE_URL` in `.env`
+   (~10 min; all other config is already wired).
+
+   **Gemma E4B known limitations** (observed, not root-caused):
+   - **Intermittent empty turns** — some turns produce 0 text + 0 tools, likely a Gemma
+     4 thinking-mode quirk (reasoning-only, no final answer under certain inputs).
+   - **Weak document reading** — the 4.5B-effective model struggles to follow tool-use
+     instructions (e.g. claimed it "cannot read" .docx files even though `.md` sidecars
+     existed on disk). The infrastructure and wiring are correct and proven. The model's
+     capability is the limiting factor for compliance-reporting workloads.
+
+   For a production local-model test at this caliber, consider the **Gemma 4 26B A4B**
+   (MoE, 3.8B active, 256K ctx) on L40S 48GB, which requires a quota increase
+   (`g6e.xlarge` fits at 4 vCPU; `g6e.2xlarge` needs 8). The E4B deployment proved the
+   end-to-end architecture: custom openai-compatible provider + vLLM with chat-template +
+   on-demand GPU instances. Scaling to a larger model uses the same wiring.
 - **`HANDOFF.md` removed** — `AGENTS.md` is the single source of truth.
 
 **SECURITY FLAG — BFF auth (audit C-1):** every `/api/*` route is currently

@@ -1,7 +1,7 @@
 // @bun
 var __require = import.meta.require;
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/adapters/opencode/map.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/adapters/opencode/map.ts
 function toNeutral(entries) {
   return entries.map((entry, index) => entryToNeutral(entry, index));
 }
@@ -186,12 +186,12 @@ function applyMutationsToEntry(original, neutral) {
   return { info: original.info, parts: newParts };
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/adapters/opencode/services.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/adapters/opencode/services.ts
 import { readFile, writeFile, rename, mkdir } from "fs/promises";
 import { join, dirname } from "path";
 import { randomUUID } from "crypto";
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/services/tokenizer.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/services/tokenizer.ts
 class CharTokenizer {
   countTokens(text) {
     return Math.ceil(text.length / 4);
@@ -199,7 +199,7 @@ class CharTokenizer {
 }
 var defaultTokenizer = new CharTokenizer;
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/services/clock.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/services/clock.ts
 class WallClock {
   now() {
     return Date.now();
@@ -207,7 +207,7 @@ class WallClock {
 }
 var wallClock = new WallClock;
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/types/state.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/types/state.ts
 function createInitialState(sessionId) {
   return {
     sessionId,
@@ -222,6 +222,7 @@ function createInitialState(sessionId) {
     dedupDecisions: new Set,
     staleErrorDecisions: new Set,
     maskDecisions: new Map,
+    hardCapDroppedIds: new Set,
     toolParameters: new Map,
     toolIdList: [],
     messageIds: {
@@ -248,7 +249,8 @@ function createInitialState(sessionId) {
       totalTokensOffloaded: 0,
       totalCompressRuns: 0,
       totalTokensCompressed: 0,
-      totalTokensSaved: 0
+      totalTokensSaved: 0,
+      totalHardCapPasses: 0
     },
     modelContextLimit: 1e6,
     systemPromptTokens: 0,
@@ -258,7 +260,7 @@ function createInitialState(sessionId) {
   };
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/adapters/opencode/services.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/adapters/opencode/services.ts
 class AnthropicTokenizer {
   delegate = new CharTokenizer;
   initialized = false;
@@ -341,6 +343,10 @@ function serializeState(state) {
     blockRegistry: Array.from(state.blockRegistry.entries()),
     messageIndex: Array.from(state.messageIndex.entries()),
     activeByAnchorMessageId: Array.from(state.activeByAnchorMessageId.entries()),
+    dedupDecisions: Array.from(state.dedupDecisions),
+    staleErrorDecisions: Array.from(state.staleErrorDecisions),
+    maskDecisions: Array.from(state.maskDecisions.entries()),
+    hardCapDroppedIds: Array.from(state.hardCapDroppedIds),
     toolParameters: Array.from(state.toolParameters.entries()),
     toolIdList: state.toolIdList,
     messageIds: {
@@ -363,6 +369,10 @@ function deserializeState(raw) {
       blockRegistry: new Map(raw.blockRegistry),
       messageIndex: new Map(raw.messageIndex),
       activeByAnchorMessageId: new Map(raw.activeByAnchorMessageId),
+      dedupDecisions: new Set(raw.dedupDecisions ?? []),
+      staleErrorDecisions: new Set(raw.staleErrorDecisions ?? []),
+      maskDecisions: new Map(raw.maskDecisions ?? []),
+      hardCapDroppedIds: new Set(raw.hardCapDroppedIds ?? []),
       lastPruneCompressRuns: raw.lastPruneCompressRuns ?? 0,
       toolParameters: new Map(raw.toolParameters),
       toolIdList: raw.toolIdList ?? [],
@@ -415,7 +425,7 @@ async function loadOrCreateState(sessionId, persistence) {
   return loaded ?? createInitialState(sessionId);
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/defaults.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/defaults.ts
 var CACHE_MODEL_DEEPSEEK = {
   type: "automatic-free",
   R: 50,
@@ -472,13 +482,14 @@ function buildDefaultConfig(sessionId) {
       safetyCap: "80%",
       maskTriggerThreshold: 150000
     },
+    hardCap: "92%",
     toolClasses: { ...DEFAULT_TOOL_CLASSES },
     modelContextLimit: 1e6,
     systemPromptTokens: 0
   };
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/profiles.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/profiles.ts
 var PROFILES = {
   documents: {
     preferOffload: true,
@@ -503,7 +514,7 @@ function getProfile(name) {
   return PROFILES[name];
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/config.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/config.ts
 function resolveConfig(sessionId, plugin, global, provider, model, runtime) {
   const base = buildDefaultConfig(sessionId);
   const layers = [plugin, global, provider, model, runtime].filter(Boolean);
@@ -540,7 +551,7 @@ function resolveConfig(sessionId, plugin, global, provider, model, runtime) {
   return result;
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/adapters/opencode/config.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/adapters/opencode/config.ts
 function buildCoreConfig(sessionId, options, modelContextLimit, providerID, _modelID) {
   const pluginLayer = {};
   if (options.profile !== undefined) {
@@ -566,6 +577,9 @@ function buildCoreConfig(sessionId, options, modelContextLimit, providerID, _mod
   }
   if (options.summarization !== undefined) {
     pluginLayer.summarization = { appendOnly: options.summarization.appendOnly ?? true };
+  }
+  if (options.hardCap !== undefined) {
+    pluginLayer.hardCap = options.hardCap;
   }
   pluginLayer.modelContextLimit = modelContextLimit;
   const providerLayer = {
@@ -606,7 +620,7 @@ function isInternalModel(modelID) {
   return INTERNAL_MODEL_SUBSTRINGS.some((s) => lower.includes(s));
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/compress/apply.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/compress/apply.ts
 function applyCompress(messages, summaryText, sourceMessageIds, state, config, nowMs) {
   const blockId = `b${state.nextBlockId}`;
   state.nextBlockId++;
@@ -707,7 +721,7 @@ function applyCompress(messages, summaryText, sourceMessageIds, state, config, n
   return { messages: updatedMessages, blockId, anchorMessageId };
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/compress/execute.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/compress/execute.ts
 function executeCompress(input) {
   const { messages, sourceMessageIds, summaryText, state, config, nowMs } = input;
   const sourceSet = new Set(sourceMessageIds);
@@ -755,7 +769,7 @@ function selectCompressRange(messages, state, currentTurn, recencyGuardTurns) {
   return range;
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/adapters/opencode/tool.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/adapters/opencode/tool.ts
 var compressArgsSchema = {
   topic: {
     type: "string",
@@ -897,11 +911,11 @@ RULES:
 SIDE EFFECTS: The compressed messages are replaced with a summary block in the context. This is irreversible per-session (the originals are preserved in the engine's store).`;
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/adapters/opencode/plugin.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/adapters/opencode/plugin.ts
 import { join as join2 } from "path";
 import { tmpdir } from "os";
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/tagging.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/tagging.ts
 var TAG_STRIP_RE = /<dcp-message-id\b[^>]*>[\s\S]*?<\/dcp-message-id>\n?/gi;
 function stripHallucinatedTags(text) {
   return text.replace(TAG_STRIP_RE, "");
@@ -941,7 +955,7 @@ function stripMessageTags(msg) {
   return { ...msg, parts: newParts };
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/tokens.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/tokens.ts
 function estimatePartTokens(part, tokenizer) {
   switch (part.type) {
     case "text":
@@ -991,7 +1005,7 @@ function computeEffectiveBudget(modelContextLimit, safetyCap, systemPromptTokens
   return Math.max(1000, cap - systemPromptTokens);
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/budget.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/budget.ts
 function computeBudgetBreakdown(messages, config, tokenizer) {
   let documents = 0;
   let reasoning = 0;
@@ -1028,7 +1042,7 @@ function shouldTriggerMasking(totalTokens, config) {
   return totalTokens >= resolveThreshold(config.nudges.maskTriggerThreshold, config.modelContextLimit);
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/placeholders.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/placeholders.ts
 var PLACEHOLDER_DEDUP = "[Output removed to save context - information superseded or no longer needed]";
 var PLACEHOLDER_STALE_ERROR_INPUT = "[input removed due to failed tool call]";
 var PLACEHOLDER_PLAIN_MASK = "[Tool output masked to save context \u2014 older than the recency window. The tool call and its inputs are preserved; re-run the tool if this output is needed again.]";
@@ -1044,7 +1058,7 @@ ${tail}
 ` + `\u2026(full output not re-fetchable; re-run the tool if needed).]`;
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/glob.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/glob.ts
 function matchesGlob(toolName, pattern) {
   const name = toolName.toLowerCase();
   const pat = pattern.toLowerCase();
@@ -1089,7 +1103,7 @@ function findToolClassKey(toolName, toolClasses) {
   return;
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/strategies/guards.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/strategies/guards.ts
 function isAlwaysProtected(toolName) {
   return ALWAYS_PROTECTED_TOOLS.has(toolName);
 }
@@ -1129,7 +1143,7 @@ function collectEligibleToolParts(messages, currentTurn, config) {
   return eligible;
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/strategies/dedup.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/strategies/dedup.ts
 function toolCallKey(toolPart) {
   const inputStr = typeof toolPart.input === "string" ? toolPart.input : JSON.stringify(toolPart.input);
   return `${toolPart.tool}::${inputStr}`;
@@ -1193,7 +1207,7 @@ function runDedup(messages, currentTurn, config, state) {
   return { messages: result, dedupCount, tokensSaved };
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/strategies/staleError.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/strategies/staleError.ts
 var DEFAULT_STALE_ERROR_TURNS = 3;
 function runStaleError(messages, currentTurn, config, state) {
   const staleAfterTurns = DEFAULT_STALE_ERROR_TURNS;
@@ -1234,7 +1248,7 @@ function runStaleError(messages, currentTurn, config, state) {
   return { messages: result, purgedCount, tokensSaved };
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/paths.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/paths.ts
 function buildOffloadPath(workspaceDir, sessionId, callId) {
   return `${workspaceDir}/.context-offload/${sessionId}/${callId}.txt`;
 }
@@ -1251,7 +1265,7 @@ function extractTailLines(text, n) {
 `);
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/budget/costRoi.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/budget/costRoi.ts
 function evaluateCostRoi(input) {
   const { nSaved, eTurns, nAfter, cacheModel, isColdCache, isQualityTrigger, enabled, clearAtLeast } = input;
   const R = cacheModel.R;
@@ -1333,7 +1347,7 @@ function buildCostRoiInput(nSaved, nAfter, activeTokens, config, nowMs, lastRequ
   };
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/strategies/observationMask.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/strategies/observationMask.ts
 var OFFLOAD_PREVIEW_LINES = 10;
 var STATEFUL_TAIL_LINES = 20;
 var OFFLOAD_MIN_CHARS = 2000;
@@ -1467,7 +1481,7 @@ function runObservationMask(messages, currentTurn, config, state, workspaceDir, 
   return { messages: result, maskedCount, offloadedCount, tokensSaved, offloadRequests };
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/cascade.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/cascade.ts
 function runCascade(messages, currentTurn, config, state, tokenizer, workspaceDir, nowMs = 0) {
   let current = messages;
   let totalSaved = 0;
@@ -1579,17 +1593,18 @@ function estimateDedupStaleSavings(messages, currentTurn, config, state) {
   return estimated;
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/applyDecisions.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/applyDecisions.ts
 function applyDecisions(messages, state) {
   const {
     dedupDecisions,
     staleErrorDecisions,
     maskDecisions,
+    hardCapDroppedIds,
     messageIndex,
     blockRegistry,
     activeByAnchorMessageId
   } = state;
-  if (dedupDecisions.size === 0 && staleErrorDecisions.size === 0 && maskDecisions.size === 0 && messageIndex.size === 0 && activeByAnchorMessageId.size === 0) {
+  if (dedupDecisions.size === 0 && staleErrorDecisions.size === 0 && maskDecisions.size === 0 && hardCapDroppedIds.size === 0 && messageIndex.size === 0 && activeByAnchorMessageId.size === 0) {
     return messages;
   }
   const compressedMessageIds = new Set;
@@ -1634,6 +1649,10 @@ function applyDecisions(messages, state) {
       }
     }
     if (compressedMessageIds.has(msg.id)) {
+      result.push({ ...msg, isIgnored: true });
+      continue;
+    }
+    if (hardCapDroppedIds.has(msg.id)) {
       result.push({ ...msg, isIgnored: true });
       continue;
     }
@@ -1685,7 +1704,63 @@ function getSummaryText(blockId, messages) {
   return;
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/nudges.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/strategies/hardCap.ts
+function runHardCap(messages, currentTurn, config, state, workspaceDir, tokenizer = defaultTokenizer, nowMs = 0) {
+  const hardCapTokens = resolveThreshold(config.hardCap, config.modelContextLimit);
+  let current = estimateContextTokens(messages, tokenizer);
+  if (!Number.isFinite(hardCapTokens) || current <= hardCapTokens) {
+    return { messages, tokensSaved: 0, droppedCount: 0, offloadRequests: [], fired: false };
+  }
+  let working = messages;
+  let tokensSaved = 0;
+  const offloadRequests = [];
+  const forcedConfig = {
+    ...config,
+    costRoi: { enabled: false },
+    minRepruneInterval: 0,
+    clearAtLeast: 0,
+    recencyGuardTurns: Math.min(config.recencyGuardTurns, 2)
+  };
+  const masked = runObservationMask(working, currentTurn, forcedConfig, state, workspaceDir, tokenizer, nowMs);
+  working = masked.messages;
+  tokensSaved += masked.tokensSaved;
+  offloadRequests.push(...masked.offloadRequests);
+  current = estimateContextTokens(working, tokenizer);
+  let droppedCount = 0;
+  if (current > hardCapTokens) {
+    const keepRecent = Math.max(config.recencyGuardTurns, 4);
+    const cutoff = working.length - keepRecent;
+    const next = working.map((m) => ({ ...m }));
+    for (let i = 0;i < next.length && current > hardCapTokens; i++) {
+      if (i >= cutoff)
+        break;
+      const m = next[i];
+      if (m.isIgnored)
+        continue;
+      if (m.isSummary)
+        continue;
+      if (state.hardCapDroppedIds.has(m.id))
+        continue;
+      if (m.parts.some((p) => p.type === "tool" && isAlwaysProtected(p.tool))) {
+        continue;
+      }
+      const cost = estimateMessageTokens(m, tokenizer);
+      state.hardCapDroppedIds.add(m.id);
+      m.isIgnored = true;
+      current -= cost;
+      tokensSaved += cost;
+      droppedCount++;
+    }
+    working = next;
+  }
+  const fired = masked.tokensSaved > 0 || droppedCount > 0;
+  if (fired) {
+    state.stats.totalHardCapPasses = (state.stats.totalHardCapPasses ?? 0) + 1;
+  }
+  return { messages: working, tokensSaved, droppedCount, offloadRequests, fired };
+}
+
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/nudges.ts
 function getNudgeLevel(totalTokens, config) {
   const limit = config.modelContextLimit;
   const { lowerThreshold, midSoftNudge, upperThreshold, safetyCap } = config.nudges;
@@ -1745,7 +1820,7 @@ ${nudgeText}` };
   return messages;
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/finalize.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/finalize.ts
 function runFinalize(messages) {
   return messages.filter((m) => !m.isIgnored).sort((a, b) => a.createdAt - b.createdAt).map(injectRefTag);
 }
@@ -1767,7 +1842,7 @@ ${existing}`;
   return { ...msg, parts: newParts };
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/pipeline.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/pipeline.ts
 function runPipeline(input, services) {
   const { messages, state, config, nowMs } = input;
   const { tokenizer, workspaceDir } = services;
@@ -1780,11 +1855,14 @@ function runPipeline(input, services) {
   const cascadeResult = runCascade(tagged, state.currentTurn, config, state, tokenizer, workspaceDir, nowMs);
   state.stats.totalTokensSaved += cascadeResult.tokensSaved;
   const afterApply = applyDecisions(cascadeResult.messages, state);
-  const postCascadeTokens = estimateContextTokens(afterApply, tokenizer);
+  const hardCapResult = runHardCap(afterApply, state.currentTurn, config, state, workspaceDir, tokenizer, nowMs);
+  state.stats.totalTokensSaved += hardCapResult.tokensSaved;
+  const afterHardCap = hardCapResult.messages;
+  const postCascadeTokens = estimateContextTokens(afterHardCap, tokenizer);
   const nudgeLevel = getNudgeLevel(postCascadeTokens, config);
   const nudgeText = buildNudgeText(nudgeLevel, postCascadeTokens, budget.effectiveBudget);
   const injectCompress = shouldInjectCompress(nudgeLevel);
-  const finalized = runFinalize(afterApply);
+  const finalized = runFinalize(afterHardCap);
   const estimatedTokens = estimateContextTokens(finalized, tokenizer);
   state.lastRequestTime = nowMs;
   return {
@@ -1793,13 +1871,13 @@ function runPipeline(input, services) {
     nudgeText,
     shouldInjectCompress: injectCompress,
     estimatedTokens,
-    savedThisRun: cascadeResult.tokensSaved,
+    savedThisRun: cascadeResult.tokensSaved + hardCapResult.tokensSaved,
     cumulativeSaved: state.stats.totalTokensSaved,
-    offloadRequests: cascadeResult.offloadRequests
+    offloadRequests: [...cascadeResult.offloadRequests, ...hardCapResult.offloadRequests]
   };
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/core/compress/reversible.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/core/compress/reversible.ts
 function decompressBlock(messages, blockId, state) {
   const meta = state.blockRegistry.get(blockId);
   if (!meta)
@@ -1831,7 +1909,7 @@ function decompressBlock(messages, blockId, state) {
   return { messages: result, blockId };
 }
 
-// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-5723b24542914b0cb7a2f25b2e95daff/clean-impl/adapters/opencode/plugin.ts
+// ../../../../C:/Users/xyzzx/AppData/Local/Temp/cm-bb0eb76eee4c42eb9bf08e7d67d0c0f5/clean-impl/adapters/opencode/plugin.ts
 async function DcpPlugin(_input, options) {
   const pluginOptions = extractPluginOptions(["plugin", options ?? {}]);
   const services = await buildServices(pluginOptions.storagePath);
