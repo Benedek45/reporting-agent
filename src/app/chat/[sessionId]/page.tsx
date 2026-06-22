@@ -16,7 +16,7 @@ import DocumentsSidebar from "@/app/_components/DocumentsSidebar";
 import Thinking from "@/app/_components/Thinking";
 import ContextMeter from "@/app/_components/ContextMeter";
 import TodoPanel from "@/app/_components/TodoPanel";
-import MarkdownMessage from "@/app/_components/MarkdownMessage";
+import MarkdownMessage, { cleanVisibleReply } from "@/app/_components/MarkdownMessage";
 import ToolActivity from "@/app/_components/ToolActivity";
 import ThemeToggle from "@/app/_components/ThemeToggle";
 import ReportPreview from "@/app/_components/ReportPreview";
@@ -821,22 +821,33 @@ export default function ChatPage() {
           );
           })}
 
-          {/* In-progress streaming bubble (only when text or tools arrive) */}
-          {streamingText !== null && (streamingText || streamingTools.length > 0) && (
-            <div className="msg-wrapper assistant">
-              {streamingTools.length > 0 && (
-                <ToolActivity tools={streamingTools} />
-              )}
-              {streamingText ? (
-                <div className="msg assistant msg-streaming">
-                  <MarkdownMessage content={streamingText} />
-                </div>
-              ) : null}
-            </div>
-          )}
+          {/* In-progress streaming bubble. Planning before <reply> is hidden, so
+              we render the bubble only when the CLEANED text is non-empty; while it
+              is empty the Thinking indicator shows instead of a raw planning dump. */}
+          {(() => {
+            const visibleStreaming =
+              streamingText === null ? "" : cleanVisibleReply(streamingText, true);
+            return (
+              <>
+                {streamingText !== null &&
+                  (visibleStreaming || streamingTools.length > 0) && (
+                    <div className="msg-wrapper assistant">
+                      {streamingTools.length > 0 && (
+                        <ToolActivity tools={streamingTools} />
+                      )}
+                      {visibleStreaming ? (
+                        <div className="msg assistant msg-streaming">
+                          <MarkdownMessage content={streamingText} streaming />
+                        </div>
+                      ) : null}
+                    </div>
+                  )}
 
-          {/* Thinking indicator — the ONLY bubble while waiting for text */}
-          <Thinking active={busy && streamingText === ""} reasoning={reasoningText} />
+                {/* Thinking indicator — the ONLY bubble while waiting for a visible reply */}
+                <Thinking active={busy && !visibleStreaming} reasoning={reasoningText} />
+              </>
+            );
+          })()}
 
           <div ref={messagesEndRef} />
         </div>

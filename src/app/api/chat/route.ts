@@ -7,19 +7,31 @@ export const runtime = "nodejs";
 
 import { NextRequest } from "next/server";
 import { sendMessage } from "@/lib/opencode";
+import { sessionDirectory } from "@/lib/workspace";
 
 // Minimal workspace guidance injected on the legacy non-streaming path so the
 // agent is aware of the merged folder layout and deliverable conventions.
-const WORKSPACE_GUIDANCE =
-  "All files (uploads and the report) live in one folder. " +
-  "Continue writing the report to `output/report.md`. " +
-  "If you produce any other deliverable, call `present_file` with its absolute path.";
+function workspaceGuidance(directory: string): string {
+  return (
+    "Uploads and the report live in the `output/` folder; write the report to " +
+    "`output/report.md`. To record progress on the user's checklist, call the " +
+    "`roadmap_mark_done` tool with `workspace_dir` = `" +
+    directory +
+    "` and `items` = short descriptions of the completed checklist items (it " +
+    "fuzzy-matches and flips the right checkboxes). Do NOT edit `roadmap.md` " +
+    "yourself and never create `output/roadmap.md`. If you produce any other " +
+    "deliverable, call `present_file` with its absolute path."
+  );
+}
 
 const VISIBLE_REPLY_GUARD =
-  "Your visible assistant message must contain only the final user-facing reply. " +
-  "Do NOT include internal setup, planning, self-instructions, or tool narration. " +
-  "Never write phrases like `The skill is loaded`, `Now I need to`, `I will combine`, " +
-  "`The user said`, or a `Plan:` section.";
+  "## Output format — wrap your visible reply in <reply>...</reply>\n" +
+  "Do any internal planning, file-reading notes, tool reasoning, or self-instructions FIRST " +
+  "(or keep them in your reasoning channel). Then write the message the user should see, wrapped " +
+  "in <reply> and </reply> tags. ONLY the text inside <reply>...</reply> is shown to the user; " +
+  "everything outside the tags is discarded. Always include BOTH tags, even for a one-line reply. " +
+  "Never put planning such as `The skill is loaded`, `Now I need to`, `I will combine`, " +
+  "`The user uploaded`, `There is no .md version`, or a `Plan:` section inside the <reply> tags.";
 
 export async function POST(req: NextRequest): Promise<Response> {
   try {
@@ -37,8 +49,10 @@ export async function POST(req: NextRequest): Promise<Response> {
       );
     }
 
+    const directory = await sessionDirectory(sessionId);
+
     const { text: reply } = await sendMessage(sessionId, text, {
-      system: `${WORKSPACE_GUIDANCE}\n\n${VISIBLE_REPLY_GUARD}`,
+      system: `${workspaceGuidance(directory)}\n\n${VISIBLE_REPLY_GUARD}`,
     });
 
     return Response.json({ reply });

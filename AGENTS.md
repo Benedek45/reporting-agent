@@ -50,7 +50,7 @@ The application is a **two-service Docker Compose project**:
   │                ├─ skills: csrd-esrs, esg-reporting             │
   │                ├─ plugin: context-manager (MIT)                  │
   │                ├─ plugin: report-compaction (MIT)              │
-  │                └─ MCP: workspace(delete,present) · time · fact-check │
+  │                └─ MCP: workspace(delete,present) · roadmap · time · fact-check │
   │  converter     MarkItDown -> Markdown   :8000 (internal, MIT)  │
   │                                                                │
   │  volume: workspaces ── mounted at /workspaces in app+opencode  │
@@ -306,7 +306,8 @@ prompts/
 .opencode/plugins/
   report-compaction.js     MIT plugin: inject goal+STATUS+[DATA NEEDED] at compaction
 mcp/
-  workspace/index.mjs      MCP (ENABLED, zero-dep): delete_file under /workspaces
+  workspace/index.mjs      MCP (ENABLED, zero-dep): delete_file, present_file under /workspaces
+  roadmap/index.mjs        MCP (ENABLED, zero-dep): mark_done, status — flip roadmap.md checkboxes
   time/index.mjs           MCP (ENABLED, zero-dep): current date/time only
   fact-check/index.mjs     MCP (ENABLED, zero-dep): Tavily-backed verify_claim
   doc-generate/index.mjs   MCP stub: SUPERSEDED by converter /render (md->PDF/DOCX)
@@ -477,6 +478,23 @@ and picking up stray configs — the original collision cause).
     that deletes a file (+ its `.md` sidecar) under `/workspaces`. It exists because
     opencode has **no built-in delete tool** and we deny `bash`; it powers the "ask
     the model to delete" flow.
+  - `roadmap` (**enabled**): `mark_done` + `status` — a **zero-dependency** stdio
+    server that maintains the per-session progress checklist. **Why it exists:**
+    the progress bar reads the canonical `roadmap.md` at the workspace ROOT (56
+    items, `- [ ]`/`- [x]`), but models (esp. Gemma 4) are unreliable at editing
+    it in place — they write `output/roadmap.md` (wrong folder), destructively
+    rewrite it to a few summary items, or invent non-standard syntax
+    (`- [in_progress]`). `roadmap_mark_done {workspace_dir, items:[…]}` lets the
+    agent NAME items; the server **fuzzy-matches** each against the unchecked
+    items and flips only the right `- [ ]`→`- [x]` (atomic temp+rename), never
+    rewriting/reordering/re-titling. `roadmap_status {workspace_dir}` returns the
+    checklist with exact labels. A trailing `/output` on `workspace_dir` is
+    normalized off; paths validated under `/workspaces`. The per-turn
+    `WORKSPACE_GUIDANCE` injects the exact `workspace_dir` and tells the agent to
+    use this tool and **not** edit `roadmap.md` directly. `workspace.ts`
+    `readRoadmapState` also keeps the original 56-item denominator if a rogue
+    rewrite ever shrinks the live file (defense in depth). Verified e2e: a turn
+    went 0/56→3/56 via `roadmap_mark_done` with the denominator intact.
   - `time` (**enabled**): `get_current_time` — zero-dependency stdio MCP. It only
     returns the current date/time; it never schedules or auto-fires. Separately,
     the BFF injects the current date/time via per-turn `system` on the first user

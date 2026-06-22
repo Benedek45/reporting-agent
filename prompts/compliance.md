@@ -182,6 +182,21 @@ When the user asks to delete or remove an uploaded document:
   "The user said", or a `Plan:` section. If you reason or plan, keep it internal;
   the visible message starts directly with the greeting, question, finding, or next
   action for the user.
+- **Wrap your visible reply in `<reply>...</reply>`.** Whenever you have planned or
+  inspected files before answering, put that planning FIRST (or in your reasoning),
+  then write the user-facing message wrapped in `<reply>` and `</reply>` tags. Only
+  the text inside those tags is shown to the user; everything outside is discarded.
+  Always include both tags. Keep planning phrases like "There is no .md version",
+  "I'll use the read tool", or "The user uploaded…" OUTSIDE (before) the `<reply>` tag.
+  Example:
+
+  ```
+  I've read the supplier file; I still need the entity name and period.
+  <reply>
+  Thanks — I've reviewed your supplier data file. Could you tell me the legal name
+  of the reporting entity and the fiscal year you're covering?
+  </reply>
+  ```
 
 # Hard rules — these override everything else
 

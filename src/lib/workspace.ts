@@ -657,9 +657,56 @@ export async function getRoadmapText(sessionId: string): Promise<string> {
 export async function readRoadmapState(
   sessionId: string
 ): Promise<RoadmapState | null> {
-  const text = await getRoadmapTextFromFile(sessionId);
-  if (!text) return null;
-  return parseRoadmap(text);
+  const liveText = await getRoadmapTextFromFile(sessionId);
+
+  // Original checklist captured at session creation (the canonical item set).
+  let origText = "";
+  try {
+    const state = await readSessionState(sessionId);
+    origText = state.roadmapText ?? "";
+  } catch {
+    // No stored state — fall back to the live file only.
+  }
+
+  const live = liveText ? parseRoadmap(liveText) : null;
+  const orig = origText ? parseRoadmap(origText) : null;
+
+  // If the agent shrank, rewrote, or replaced the live file (fewer items than
+  // the original checklist), keep the ORIGINAL structure as the canonical total
+  // and mark items done by matching the labels the agent actually checked off.
+  // This prevents a destructive rewrite (e.g. 56 items -> 6) from collapsing the
+  // progress bar's denominator.
+  if (orig && (!live || live.totalSteps < orig.totalSteps)) {
+    const doneLabels = new Set<string>();
+    if (live) {
+      for (const s of live.sections) {
+        for (const st of s.steps) {
+          if (st.done) doneLabels.add(normalizeRoadmapLabel(st.label));
+        }
+      }
+    }
+    let done = 0;
+    const sections: RoadmapSection[] = orig.sections.map((s) => ({
+      title: s.title,
+      steps: s.steps.map((st) => {
+        const isDone = st.done || doneLabels.has(normalizeRoadmapLabel(st.label));
+        if (isDone) done += 1;
+        return { label: st.label, done: isDone };
+      }),
+    }));
+    return {
+      sections,
+      totalSteps: orig.totalSteps,
+      doneSteps: done,
+      pct: orig.totalSteps === 0 ? 0 : Math.round((done / orig.totalSteps) * 100),
+    };
+  }
+
+  return live;
+}
+
+function normalizeRoadmapLabel(label: string): string {
+  return label.toLowerCase().replace(/\s+/g, " ").trim();
 }
 
 async function getRoadmapTextFromFile(sessionId: string): Promise<string> {

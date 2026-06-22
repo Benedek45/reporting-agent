@@ -123,6 +123,11 @@
       "command": ["bun", "run", "/config/mcp/workspace/index.mjs"],
       "enabled": true
     },
+    "roadmap": {
+      "type": "local",
+      "command": ["bun", "run", "/config/mcp/roadmap/index.mjs"],
+      "enabled": true
+    },
     "time": {
       "type": "local",
       "command": ["bun", "run", "/config/mcp/time/index.mjs"],

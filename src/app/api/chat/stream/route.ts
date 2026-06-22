@@ -31,26 +31,43 @@ import type { StreamEvent, TodoItem } from "@/types";
  * unchanged. Covers the merged workspace folder, deliverable presentation, and
  * roadmap upkeep.
  */
-const WORKSPACE_GUIDANCE =
-  "## Workspace, deliverables & roadmap\n" +
-  "- All files (the documents the user uploads AND the report you write) live in " +
-  "one folder. Continue writing the report to `output/report.md` as before.\n" +
-  "- `report.md` is shown to the user automatically. If you produce any OTHER " +
-  "deliverable file, call the `present_file` tool with its absolute path so the " +
-  "user sees it under 'Presented'.\n" +
-  "- A `roadmap.md` checklist tracks the data/sections this report needs. As you " +
-  "collect information and complete sections, edit `roadmap.md` and tick the " +
-  "matching items (`- [ ]` → `- [x]`). Keep it accurate — it drives the user's " +
-  "progress bar. Do not invent new items; only check off existing ones (you may " +
-    "add a sub-item only if the user introduces genuinely new in-scope data).";
+function workspaceGuidance(directory: string): string {
+  return (
+    "## Workspace, deliverables & roadmap\n" +
+    "- The documents the user uploads AND the report you write live in the `output/` " +
+    "folder. Write the report to `output/report.md`.\n" +
+    "- `report.md` is shown to the user automatically. If you produce any OTHER " +
+    "deliverable file, call the `present_file` tool with its absolute path so the " +
+    "user sees it under 'Presented'.\n" +
+    "- The user's progress bar is driven by a fixed checklist. To record progress, " +
+    "call the `roadmap_mark_done` tool. Pass `workspace_dir` = `" +
+    directory +
+    "` and `items` = an array of short descriptions of the checklist items you have " +
+    "completed (each item's data collected from a sourced document and reflected in " +
+    "the report). You do not need exact wording -- the tool fuzzy-matches your " +
+    "description to the checklist; call `roadmap_status` with the same `workspace_dir` " +
+    "first if you want to see the exact item labels.\n" +
+    "- Do NOT edit `roadmap.md` yourself and do NOT create `output/roadmap.md`. The " +
+    "`roadmap_mark_done` tool is the ONLY correct way to update progress; it flips the " +
+    "right checkboxes in the canonical file for you."
+  );
+}
 
 const VISIBLE_REPLY_GUARD =
-  "## Visible reply only\n" +
-  "Your visible assistant message must contain only the final user-facing reply. " +
-  "Do NOT include internal setup, planning, self-instructions, or tool narration. " +
-  "Never write phrases like `The skill is loaded`, `Now I need to`, `I will combine`, " +
-  "`The user said`, or a `Plan:` section. If you need to plan, keep it in reasoning; " +
-  "the answer bubble should start directly with the greeting, question, finding, or next action for the user.";
+  "## Output format — wrap your visible reply in <reply>...</reply>\n" +
+  "Do any internal planning, file-reading notes, tool reasoning, or self-instructions FIRST " +
+  "(or keep them in your reasoning channel). Then write the message the user should see, wrapped " +
+  "in <reply> and </reply> tags. ONLY the text inside <reply>...</reply> is shown to the user; " +
+  "everything outside the tags is discarded. Always include BOTH tags, even for a one-line reply.\n" +
+  "Example:\n" +
+  "I've read the uploaded file; it has supplier data. I still need the entity name and fiscal year.\n" +
+  "<reply>\n" +
+  "Thanks — I've reviewed your supplier data file. To frame the report correctly, could you tell me " +
+  "the legal name of the reporting entity and the fiscal year you're covering?\n" +
+  "</reply>\n" +
+  "Never put planning such as `The skill is loaded`, `Now I need to`, `I will combine`, " +
+  "`The user uploaded`, `There is no .md version`, or a `Plan:` section INSIDE the <reply> tags — " +
+  "keep all of that before the opening <reply> tag.";
 
 // Idle timeout: max time with ZERO upstream activity before we give up.
 // This is reset on every chunk received from the engine's /event stream.
@@ -294,7 +311,8 @@ export async function POST(req: NextRequest): Promise<Response> {
 
         // Workspace, deliverables & roadmap guidance — always injected so it
         // survives compaction (re-injected each turn on top of compacted history).
-        systemParts.push(WORKSPACE_GUIDANCE);
+        // The exact workspace_dir is baked in so the roadmap tool gets the right path.
+        systemParts.push(workspaceGuidance(directory));
 
         systemParts.push(
           "Reply in the same language the user writes in unless they ask otherwise."

@@ -59,7 +59,8 @@ and doesn't need to be re-researched or re-litigated.
 - Adding a goal = drop a new `goals/goal_*.md` (frontmatter `id/title/agent/skill/template/roadmap` + body) — no code change.
 
 ### 3.3 Custom MCP servers (zero-dependency, stdio, launched with `bun`)
-- `workspace` (enabled): `delete_file` — deletes a file + its `.md` sidecar under `/workspaces`. Needed because opencode has no built-in delete tool and bash is denied.
+- `workspace` (enabled): `delete_file` + `present_file` — deletes a file + its `.md` sidecar, or marks a deliverable as presented, under `/workspaces`. Needed because opencode has no built-in delete tool and bash is denied.
+- `roadmap` (enabled): `mark_done` + `status` — the agent NAMES completed checklist items; the server fuzzy-matches them against the unchecked `- [ ]` lines in the canonical root `roadmap.md` and flips only those to `- [x]` (atomic write). **Why a tool, not markdown editing:** models (esp. Gemma 4) write the wrong file (`output/roadmap.md`), destructively rewrite the checklist, or invent invalid syntax (`- [in_progress]`). The tool makes progress updates deterministic and app-controlled; the agent can't corrupt the file. The per-turn guidance injects the exact `workspace_dir`.
 - `time` (enabled): `get_current_time` — returns current date/time only, never schedules.
 - `fact-check` (enabled): `verify_claim` — Tavily-backed; returns NEEDS_CONFIG without `FACTCHECK_API_KEY`.
 
