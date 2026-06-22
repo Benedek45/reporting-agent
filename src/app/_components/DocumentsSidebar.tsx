@@ -20,6 +20,8 @@ type DupChoice = "replace" | "keepboth" | "skip";
 interface NotifyFile {
   name: string;
   diff?: string;
+  /** Set when the file was auto-converted to Markdown on upload. */
+  markdownName?: string;
 }
 
 interface DocumentsSidebarProps {
@@ -116,6 +118,7 @@ export default function DocumentsSidebar({
             files: data.uploaded.map((u) => ({
               name: u.name,
               ...(u.diff ? { diff: u.diff } : {}),
+              ...(u.converted ? { markdownName: u.name + ".md" } : {}),
             })),
           });
         }

@@ -4,7 +4,7 @@
 #
 # The context manager is developed and tested as a SEPARATE project. This repo
 # only CONSUMES the built artifact: a single self-contained Bun bundle dropped at
-# .opencode/plugins/context-manager.js (auto-discovered by the opencode engine).
+# .opencode/context-manager.js (loaded via explicit plugin declaration in opencode.json).
 #
 # This script clones the plugin repo at a pinned commit, builds the opencode
 # adapter entry into that single file, and cleans up. No plugin source is kept
@@ -21,7 +21,7 @@ REF="${1:-2221b92cd7e7e00f6291a5f39981e9817edd3166}"
 REPO_URL="https://github.com/Benedek45/context-manager.git"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"
-DEST="$REPO_ROOT/.opencode/plugins/context-manager.js"
+DEST="$REPO_ROOT/.opencode/context-manager.js"
 TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 

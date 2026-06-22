@@ -96,7 +96,7 @@ function sseFrame(event: StreamEvent): string {
  */
 interface NotifyPayload {
   kind: "upload" | "replace" | "edit";
-  files: { name: string; diff?: string }[];
+  files: { name: string; diff?: string; markdownName?: string }[];
 }
 
 /**
@@ -120,10 +120,14 @@ function buildNotifyText(n: NotifyPayload): string {
     const changed = n.files.filter((f) => f.diff);
     let msg = prefix;
     if (fresh.length > 0) {
+      const fileDescs = fresh.map((f) =>
+        f.markdownName
+          ? `${f.name} (auto-converted → read as ${f.markdownName})`
+          : f.name
+      );
       msg +=
-        `The user added ${fresh.length} new document(s): ` +
-        `${fresh.map((f) => f.name).join(", ")}. ` +
-        `Non-text files were auto-converted to Markdown and are readable in your workspace. `;
+        `The user added ${fresh.length} new document(s): ${fileDescs.join(", ")}. ` +
+        `Read the .md version for any converted files. `;
     }
     if (changed.length > 0) {
       msg +=

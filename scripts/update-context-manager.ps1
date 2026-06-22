@@ -4,7 +4,7 @@
 #
 # The context manager is developed and tested as a SEPARATE project. This repo
 # only CONSUMES the built artifact: a single self-contained Bun bundle dropped at
-# .opencode/plugins/context-manager.js (auto-discovered by the opencode engine).
+# .opencode/context-manager.js (loaded via explicit plugin declaration in opencode.json).
 #
 # This script clones the plugin repo at a pinned commit, builds the opencode
 # adapter entry into that single file, and cleans up. No plugin source is kept
@@ -23,7 +23,7 @@ $ErrorActionPreference = "Stop"
 
 $repoUrl  = "https://github.com/Benedek45/context-manager.git"
 $repoRoot = Split-Path -Parent $PSScriptRoot
-$dest     = Join-Path $repoRoot ".opencode/plugins/context-manager.js"
+$dest     = Join-Path $repoRoot ".opencode/context-manager.js"
 $tmp      = Join-Path ([System.IO.Path]::GetTempPath()) ("cm-" + [guid]::NewGuid().ToString("N"))
 
 try {
