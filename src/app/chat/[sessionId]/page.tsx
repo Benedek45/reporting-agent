@@ -24,6 +24,22 @@ import RoadmapBar from "@/app/_components/RoadmapBar";
 import FileEditorModal from "@/app/_components/FileEditorModal";
 import React from "react";
 
+// Fallback shown when an assistant turn produced tool work but no visible
+// text (a known intermittent local-model behaviour — e.g. Qwen reads files
+// and writes the report but skips the summary sentence). Without this the
+// user sees a blank bubble and assumes the agent "stopped".
+function emptyAssistantFallback(tools: ToolEvent[]): string {
+  const names = new Set(tools.map((t) => t.name));
+  if (names.has("write") || names.has("edit")) {
+    return "Done — I've updated the report with that information.";
+  }
+  if (names.has("read") || names.has("glob") || names.has("grep")) {
+    return "Done — I've reviewed the documents.";
+  }
+  if (names.size > 0) return "Done.";
+  return "";
+}
+
 // ── Types ─────────────────────────────────────────────────────────────────────
 
 interface NotifyPayload {
@@ -827,7 +843,13 @@ export default function ChatPage() {
 
               <div className={`msg ${msg.role}`}>
                 {msg.role === "assistant" ? (
-                  <MarkdownMessage content={msg.text} />
+                  cleanVisibleReply(msg.text).trim() ? (
+                    <MarkdownMessage content={msg.text} />
+                  ) : (
+                    <span className="msg-fallback">
+                      {emptyAssistantFallback(msg.tools)}
+                    </span>
+                  )
                 ) : (
                   msg.text
                 )}

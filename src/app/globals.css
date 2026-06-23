@@ -1893,6 +1893,11 @@ p {
 }
 
 /* ── System notification bubble ────────────────────────────────────────────── */
+.msg-fallback {
+  color: var(--color-text-muted);
+  font-style: italic;
+}
+
 .msg-system {
   align-self: center;
   max-width: 80%;
