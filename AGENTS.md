@@ -915,6 +915,20 @@ two parallel `general` subagents; live-verified; pushed):
    - **Weak document reading** — the 4.5B-effective E4B struggled to follow tool-use
      instructions. The 26B A4B MoE (3.8B active) is the recommended production candidate.
 
+   **Empty-turn retry (local-model robustness, `chat/stream/route.ts`).** Qwen3.6:27b
+   (and Gemma) via Ollama intermittently produce a DEGENERATE EMPTY TURN — busy →
+   (optional reasoning) → idle with no answer text and no tool calls. The stream route
+   now DETECTS this and RE-FIRES the same prompt up to `MAX_EMPTY_RETRIES = 2` times.
+   A turn "produced content" iff a TEXT delta (not reasoning) or a TOOL call was seen
+   during it; tracked per phase (`mainProducedContent` / `subagentProducedContent`),
+   reset before each (re)fire. `handleIdleSignal` checks the flag on the busy→idle
+   edge: empty main turn → re-`promptAsync(text)`; empty sub-agent turn → re-fire
+   `fireRoadmapSync`. The 20s `SUBAGENT_WATCHDOG_MS` still backstops the rarer
+   never-goes-busy case (force `doFinish`, no retry). deepseek-v4-flash rarely triggers
+   any retry; this makes the local-model path resilient without changing the happy path.
+   Verified: a content-producing turn fires zero retries (history stays clean, no
+   duplicate user messages) and still syncs the roadmap (0→4/50).
+
    For a production local-model test at this caliber, consider the **Gemma 4 26B A4B**
    on L40S 48GB (FP8 = 28.8GB, fits natively) which requires a further quota increase
    (`g6e.xlarge` fits at 4 vCPU; `g6e.2xlarge` needs 8). The NVFP4-on-L4 deployment proved

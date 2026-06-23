@@ -102,6 +102,12 @@ const IDLE_TIMEOUT_MS = 300_000; // 5 minutes of complete silence
 // (degenerate empty turn), force the stream closed this long after firing it.
 // Cleared as soon as the sub-agent goes busy, so a genuine sync run is unaffected.
 const SUBAGENT_WATCHDOG_MS = 20_000;
+// Local models (Qwen3.6:27b / Gemma via Ollama) intermittently produce a
+// DEGENERATE EMPTY TURN — they go busy, (optionally) emit reasoning, then go
+// idle with no answer text and no tool calls. When that happens we re-fire the
+// same prompt up to this many times before giving up. deepseek-v4-flash rarely
+// needs it; this makes the local-model path robust.
+const MAX_EMPTY_RETRIES = 2;
 const MAX_CONTEXT_FILE_BYTES = Number(
   process.env.MAX_CONTEXT_FILE_BYTES || 200_000
 );
@@ -407,6 +413,13 @@ export async function POST(req: NextRequest): Promise<Response> {
         // where the sub-agent produces an empty turn and never emits a busy we see.
         let subagentBusy = false;
         let subagentWatchdog: ReturnType<typeof setTimeout> | null = null;
+        // Empty-turn detection + retry (local-model robustness). A turn "produced
+        // content" if we saw a TEXT delta or a TOOL call during it (reasoning-only
+        // counts as empty). Tracked per phase; reset before each (re)fire.
+        let mainProducedContent = false;
+        let subagentProducedContent = false;
+        let mainRetries = 0;
+        let subagentRetries = 0;
         // partIDs whose deltas are the model's internal reasoning (not the answer)
         const reasoningParts = new Set<string>();
         // tool-call part ids whose `read` output we've already counted toward
@@ -526,9 +539,23 @@ export async function POST(req: NextRequest): Promise<Response> {
           if (!inSubagentPhase) {
             // Main turn. Ignore any stray idle before the turn actually ran.
             if (!sawBusy) return false;
+            // Empty main turn (no answer text, no tool calls) → re-fire the same
+            // prompt. Local models intermittently return a reasoning-only/empty
+            // turn; a retry usually yields a real answer.
+            if (!mainProducedContent && mainRetries < MAX_EMPTY_RETRIES) {
+              mainRetries++;
+              sawBusy = false;
+              mainProducedContent = false;
+              try {
+                await promptAsync(sessionId, text, { directory, system });
+                return false; // keep the stream open for the retry's cycle
+              } catch {
+                return true; // re-fire failed → finish
+              }
+            }
             if (!subagentFired) {
-              // Main turn finished → fire the roadmap-sync sub-agent and keep
-              // the stream open for its busy→idle cycle.
+              // Main turn finished (with content, or retries exhausted) → fire
+              // the roadmap-sync sub-agent and keep the stream open for its cycle.
               subagentFired = true;
               inSubagentPhase = true;
               if (!(await fireRoadmapSync())) return true; // failed → finish
@@ -537,7 +564,20 @@ export async function POST(req: NextRequest): Promise<Response> {
             return true; // defensive (shouldn't reach here)
           }
           // Sub-agent phase.
-          if (subagentBusy) return true; // it ran and is now idle → finish
+          if (subagentBusy) {
+            // Empty sub-agent turn → retry before finishing (same rationale).
+            if (
+              !subagentProducedContent &&
+              subagentRetries < MAX_EMPTY_RETRIES
+            ) {
+              subagentRetries++;
+              subagentBusy = false;
+              subagentProducedContent = false;
+              if (!(await fireRoadmapSync())) return true; // failed → finish
+              return false; // keep open for the retry's cycle
+            }
+            return true; // it ran and is now idle → finish
+          }
           // Otherwise this is the main turn's trailing idle and the sub-agent
           // has not gone busy yet — ignore it; the watchdog backstops the case
           // where the sub-agent never goes busy at all.
@@ -586,16 +626,24 @@ export async function POST(req: NextRequest): Promise<Response> {
               const field = props["field"] as string | undefined;
               const delta = props["delta"] as string | undefined;
               const partID = props["partID"] as string | undefined;
-              // Suppress text/reasoning deltas during the sub-agent phase —
-              // the user sees the roadmap bar update but not "Synced." text.
-              if (!inSubagentPhase && typeof delta === "string") {
+              if (typeof delta === "string") {
                 const isReasoning =
                   field === "reasoning" ||
                   (partID !== undefined && reasoningParts.has(partID));
-                if (isReasoning) {
-                  emit({ type: "reasoning", delta });
-                } else if (field === "text") {
-                  emit({ type: "text", delta });
+                // Real answer text (not reasoning) counts as content for
+                // empty-turn detection — observed in BOTH phases.
+                if (!isReasoning && field === "text") {
+                  if (inSubagentPhase) subagentProducedContent = true;
+                  else mainProducedContent = true;
+                }
+                // Suppress text/reasoning deltas during the sub-agent phase —
+                // the user sees the roadmap bar update but not "Synced." text.
+                if (!inSubagentPhase) {
+                  if (isReasoning) {
+                    emit({ type: "reasoning", delta });
+                  } else if (field === "text") {
+                    emit({ type: "text", delta });
+                  }
                 }
               }
             } else if (type === "message.part.updated") {
@@ -623,6 +671,10 @@ export async function POST(req: NextRequest): Promise<Response> {
                 typeof part.id === "string" &&
                 typeof part.tool === "string"
               ) {
+                // A tool call counts as content for empty-turn detection
+                // (both phases — the sub-agent's roadmap_* calls count too).
+                if (inSubagentPhase) subagentProducedContent = true;
+                else mainProducedContent = true;
                 // Emit tool events only for the main agent. Roadmap-sync tools are
                 // intentionally hidden; the user sees only the progress bar update.
                 if (!inSubagentPhase) {
