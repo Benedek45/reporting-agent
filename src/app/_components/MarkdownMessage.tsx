@@ -77,8 +77,16 @@ const GREETING_RE =
  * planning. Exported so the chat page can decide whether to show the streaming
  * bubble or the Thinking indicator (when the cleaned text is empty).
  */
+// The agent appends progress markers (machine-readable roadmap updates) after
+// its reply. The BFF parses them; they must never reach the user.
+const PROGRESS_TAG_RE = /<progress>[\s\S]*?<\/progress>/gi;
+const PROGRESS_LINE_RE = /(?:^|\n)\s*PROGRESS\s*:[\s\S]*?(?:\n|$)/gi;
+
 export function cleanVisibleReply(text: string, streaming = false): string {
-  const cleaned = stripDcpTags(text);
+  const cleaned = stripDcpTags(text)
+    .replace(PROGRESS_TAG_RE, "")
+    .replace(PROGRESS_LINE_RE, "")
+    .trimEnd();
 
   // 1. Primary: explicit <reply> wrapper (deterministic, greeting-independent).
   const reply = extractReply(cleaned);

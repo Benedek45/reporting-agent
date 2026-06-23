@@ -106,30 +106,6 @@
       }
     },
 
-    "roadmap-sync": {
-      "description": "Internal subagent that updates roadmap checklist progress after each main turn. It only calls roadmap MCP tools and never edits files or talks to the user.",
-      "mode": "subagent",
-      "temperature": 0,
-      "prompt": "{file:./prompts/roadmap-sync.md}",
-      "permission": {
-        "read": "allow",
-        "glob": "deny",
-        "grep": "deny",
-        "list": "deny",
-        "edit": "deny",
-        "bash": "deny",
-        "external_directory": "deny",
-        "webfetch": "deny",
-        "websearch": "deny",
-        "question": "deny",
-        "skill": { "*": "deny" },
-        "task": { "*": "deny" },
-        "roadmap_mark_done": "allow",
-        "roadmap_mark_undone": "allow",
-        "roadmap_status": "allow"
-      }
-    },
-
     "fact-checker": {
       "description": "Read-only subagent that verifies figures, claims, and regulatory references against the source documents and the web. Returns a list of confirmed/uncertain/contradicted findings. Never edits files.",
       "mode": "subagent",

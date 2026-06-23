@@ -16,6 +16,8 @@ import {
   readSessionState,
   readRoadmapState,
   renderRoadmapForContext,
+  parseProgressTag,
+  applyRoadmapProgress,
   readUploadMarkdown,
   addLoadedContextBytes,
   recordReadDocBytes,
@@ -33,63 +35,36 @@ import type { StreamEvent, TodoItem } from "@/types";
  * roadmap upkeep.
  */
 /**
- * Workspace guidance for the MAIN compliance agent.
- * Roadmap tool instructions are intentionally omitted here — a dedicated
- * roadmap-sync sub-agent runs automatically after every turn and owns all
- * roadmap_mark_done / roadmap_mark_undone calls.
+ * Workspace + roadmap guidance for the MAIN compliance agent.
+ * Progress is reported via a <progress> tag the agent appends AFTER its
+ * </reply> (plain structured text — reliable even for weak local models, which
+ * intermittently empty-turn on tool CALLS). The BFF parses that tag and flips
+ * the matching checkboxes deterministically (see applyRoadmapProgress).
  */
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 function workspaceGuidance(_directory: string): string {
   return (
-    "## Workspace & deliverables\n" +
+    "## Workspace, deliverables & progress\n" +
     "- The documents the user uploads AND the report you write live in the `output/` " +
     "folder. Write the report to `output/report.md`.\n" +
     "- `report.md` is shown to the user automatically. If you produce any OTHER " +
     "deliverable file, call the `present_file` tool with its absolute path so the " +
     "user sees it under 'Presented'.\n" +
-    "- The progress bar below is updated automatically after each turn — you do NOT " +
-    "need to call any roadmap tool yourself."
-  );
-}
-
-/**
- * Workspace + roadmap guidance for the ROADMAP-SYNC sub-agent only.
- * This is the single place where roadmap_mark_done / roadmap_mark_undone are mentioned.
- */
-function roadmapSyncGuidance(directory: string): string {
-  return (
-    "## Roadmap sync task\n" +
-    "Your ONLY job is to call `roadmap_mark_done` and/or `roadmap_mark_undone` based " +
-    "on the conversation history above.\n\n" +
-    "Rules:\n" +
-    "1. Call `roadmap_mark_done` with `workspace_dir` = `" +
-    directory +
-    "` and `items` = short descriptions of EVERY checklist item where data was " +
-    "OBTAINED in the latest exchange (user confirmed it, or it appears in an " +
-    "uploaded document). Fuzzy-matching is used — use natural descriptions.\n" +
-    "2. Call `roadmap_mark_undone` with the same `workspace_dir` for any item that " +
-    "was previously marked done but is now known to be wrong (contradiction found, " +
-    "source replaced, or user corrected/retracted it).\n" +
-    "3. Do NOT write to the report, do NOT ask questions, do NOT produce any visible " +
-    "reply beyond <reply>Synced.</reply>."
+    "- Report progress with a `<progress>` block (see the checklist instructions " +
+    "below). Do NOT edit `roadmap.md` directly and do NOT call any roadmap tool."
   );
 }
 
 const VISIBLE_REPLY_GUARD =
-  "## Output format — wrap your visible reply in <reply>...</reply>\n" +
-  "Do any internal planning, file-reading notes, tool reasoning, or self-instructions FIRST " +
-  "(or keep them in your reasoning channel). Then write the message the user should see, wrapped " +
-  "in <reply> and </reply> tags. ONLY the text inside <reply>...</reply> is shown to the user; " +
-  "everything outside the tags is discarded. Always include BOTH tags, even for a one-line reply.\n" +
-  "Example:\n" +
-  "I've read the uploaded file; it has supplier data. I still need the entity name and fiscal year.\n" +
+  "## Output format\n" +
+  "Wrap your visible reply in <reply>...</reply>. Put your answer between the tags.\n" +
+  "After </reply>, list any checklist items you obtained data for this turn:\n" +
   "<reply>\n" +
-  "Thanks — I've reviewed your supplier data file. To frame the report correctly, could you tell me " +
-  "the legal name of the reporting entity and the fiscal year you're covering?\n" +
+  "Thanks for the details. Could you upload your energy bills?\n" +
   "</reply>\n" +
-  "Never put planning such as `The skill is loaded`, `Now I need to`, `I will combine`, " +
-  "`The user uploaded`, `There is no .md version`, or a `Plan:` section INSIDE the <reply> tags — " +
-  "keep all of that before the opening <reply> tag.";
+  "PROGRESS: entity legal name; fiscal year period; reporting framework\n" +
+  "Separate items with semicolons. If no new data, omit the PROGRESS line.\n" +
+  "Never put planning inside <reply> tags.";
 
 // Idle timeout: max time with ZERO upstream activity before we give up.
 // This is reset on every chunk received from the engine's /event stream.
@@ -98,10 +73,6 @@ const VISIBLE_REPLY_GUARD =
 // resetting while the subagent works — so long fact-checks (minutes) no longer
 // get cut off. It only fires after genuine silence.
 const IDLE_TIMEOUT_MS = 300_000; // 5 minutes of complete silence
-// Backstop for the roadmap-sync sub-agent: if it never emits a busy we observe
-// (degenerate empty turn), force the stream closed this long after firing it.
-// Cleared as soon as the sub-agent goes busy, so a genuine sync run is unaffected.
-const SUBAGENT_WATCHDOG_MS = 20_000;
 // Local models (Qwen3.6:27b / Gemma via Ollama) intermittently produce a
 // DEGENERATE EMPTY TURN — they go busy, (optionally) emit reasoning, then go
 // idle with no answer text and no tool calls. When that happens we re-fire the
@@ -399,27 +370,14 @@ export async function POST(req: NextRequest): Promise<Response> {
 
         let sawBusy = false;
         let done = false;
-        // Phase tracking for the sequential roadmap-sync sub-agent.
-        // After the main agent goes idle, we fire the sub-agent on the SAME session
-        // and event stream — the stream stays open until the sub-agent also goes idle.
-        // This prevents race conditions that arose when the sub-agent was fired as a
-        // background fire-and-forget after close().
-        let subagentFired = false;
-        // During the sub-agent phase we suppress text/reasoning deltas so the user
-        // only sees the roadmap bar update, not the "<reply>Synced.</reply>" text.
-        let inSubagentPhase = false;
-        // Set true once the sub-agent actually goes busy. We finish the stream on
-        // the FIRST idle seen after that. A watchdog backstops the degenerate case
-        // where the sub-agent produces an empty turn and never emits a busy we see.
-        let subagentBusy = false;
-        let subagentWatchdog: ReturnType<typeof setTimeout> | null = null;
         // Empty-turn detection + retry (local-model robustness). A turn "produced
         // content" if we saw a TEXT delta or a TOOL call during it (reasoning-only
-        // counts as empty). Tracked per phase; reset before each (re)fire.
-        let mainProducedContent = false;
-        let subagentProducedContent = false;
-        let mainRetries = 0;
-        let subagentRetries = 0;
+        // counts as empty). Reset before each (re)fire.
+        let producedContent = false;
+        let retries = 0;
+        // Accumulated visible answer text (non-reasoning) for the turn. Parsed
+        // for a <progress> tag at doFinish to apply roadmap progress deterministically.
+        let assistantText = "";
         // partIDs whose deltas are the model's internal reasoning (not the answer)
         const reasoningParts = new Set<string>();
         // tool-call part ids whose `read` output we've already counted toward
@@ -484,104 +442,46 @@ export async function POST(req: NextRequest): Promise<Response> {
           } catch {
             // Non-fatal — skip usage frame
           }
-          // Roadmap progress (parsed from roadmap.md) — non-fatal.
+          // Roadmap progress — non-fatal. If the agent emitted a <progress> tag,
+          // apply it deterministically (BFF-owned fuzzy-match flip); otherwise
+          // just re-read the current state.
           try {
-            const roadmap = await readRoadmapState(sessionId);
+            const prog = parseProgressTag(assistantText);
+            const roadmap = prog
+              ? await applyRoadmapProgress(sessionId, prog.done, prog.undone)
+              : await readRoadmapState(sessionId);
             if (roadmap) emit({ type: "roadmap", roadmap });
           } catch {
             // No roadmap / parse error — skip
           }
           emit({ type: "done" });
           if (timeoutHandle) clearTimeout(timeoutHandle);
-          if (subagentWatchdog) clearTimeout(subagentWatchdog);
           close();
-        };
-
-        // Fire the roadmap-sync sub-agent on the SAME session. It uses the SAME
-        // model as the main turn (the roadmap-sync agent has no hardcoded model,
-        // so promptAsync's DEFAULT_MODEL applies). The instruction lives in the
-        // user message + the agent prompt; we deliberately do NOT inject the
-        // VISIBLE_REPLY_GUARD here — its file/skill examples confused the narrow
-        // sync agent into echoing context instead of calling the tools.
-        const fireRoadmapSync = async (): Promise<boolean> => {
-          try {
-            const roadmapCtx = await renderRoadmapForContext(sessionId);
-            const syncSystem = [roadmapSyncGuidance(directory), roadmapCtx]
-              .filter(Boolean)
-              .join("\n\n");
-            await promptAsync(
-              sessionId,
-              "[Roadmap sync — automated] Review the conversation above. Call " +
-                "roadmap_mark_done for EVERY checklist item that now has data " +
-                "(a user answer or an uploaded document is enough). If an earlier " +
-                "item is now contradicted or retracted, call roadmap_mark_undone. " +
-                "Then reply exactly <reply>Synced.</reply> and nothing else.",
-              { agent: "roadmap-sync", directory, system: syncSystem }
-            );
-            // Backstop: if the sub-agent produces an empty turn and never emits a
-            // busy we observe (so the busy→idle completion path never triggers),
-            // force the stream closed after a short grace window. Cleared the
-            // moment the sub-agent actually goes busy (see the busy handler).
-            subagentWatchdog = setTimeout(() => {
-              void doFinish();
-            }, SUBAGENT_WATCHDOG_MS);
-            return true;
-          } catch {
-            return false;
-          }
         };
 
         // Decide what to do when an idle signal arrives (from either
         // `session.status {idle}` or the terminal `session.idle`). Returns true
-        // if the caller should doFinish()+break. Robust against the degenerate
-        // empty sub-agent turn (handled by subagentBusy + the watchdog).
+        // if the caller should doFinish()+break. Single-turn model: the main
+        // agent owns the roadmap tools and marks progress inline, so there is no
+        // sub-agent phase. The only special case is the empty-turn retry.
         const handleIdleSignal = async (): Promise<boolean> => {
-          if (!inSubagentPhase) {
-            // Main turn. Ignore any stray idle before the turn actually ran.
-            if (!sawBusy) return false;
-            // Empty main turn (no answer text, no tool calls) → re-fire the same
-            // prompt. Local models intermittently return a reasoning-only/empty
-            // turn; a retry usually yields a real answer.
-            if (!mainProducedContent && mainRetries < MAX_EMPTY_RETRIES) {
-              mainRetries++;
-              sawBusy = false;
-              mainProducedContent = false;
-              try {
-                await promptAsync(sessionId, text, { directory, system });
-                return false; // keep the stream open for the retry's cycle
-              } catch {
-                return true; // re-fire failed → finish
-              }
+          // Ignore any stray idle before the turn actually ran.
+          if (!sawBusy) return false;
+          // Empty turn (no answer text, no tool calls) → re-fire the same prompt.
+          // Local models intermittently return a reasoning-only/empty turn; a
+          // retry usually yields a real answer.
+          if (!producedContent && retries < MAX_EMPTY_RETRIES) {
+            retries++;
+            sawBusy = false;
+            producedContent = false;
+            try {
+              await promptAsync(sessionId, text, { directory, system });
+              return false; // keep the stream open for the retry's cycle
+            } catch {
+              return true; // re-fire failed → finish
             }
-            if (!subagentFired) {
-              // Main turn finished (with content, or retries exhausted) → fire
-              // the roadmap-sync sub-agent and keep the stream open for its cycle.
-              subagentFired = true;
-              inSubagentPhase = true;
-              if (!(await fireRoadmapSync())) return true; // failed → finish
-              return false;
-            }
-            return true; // defensive (shouldn't reach here)
           }
-          // Sub-agent phase.
-          if (subagentBusy) {
-            // Empty sub-agent turn → retry before finishing (same rationale).
-            if (
-              !subagentProducedContent &&
-              subagentRetries < MAX_EMPTY_RETRIES
-            ) {
-              subagentRetries++;
-              subagentBusy = false;
-              subagentProducedContent = false;
-              if (!(await fireRoadmapSync())) return true; // failed → finish
-              return false; // keep open for the retry's cycle
-            }
-            return true; // it ran and is now idle → finish
-          }
-          // Otherwise this is the main turn's trailing idle and the sub-agent
-          // has not gone busy yet — ignore it; the watchdog backstops the case
-          // where the sub-agent never goes busy at all.
-          return false;
+          return true; // turn produced content (or retries exhausted) → finish
         };
 
         const reader = body.getReader();
@@ -631,19 +531,13 @@ export async function POST(req: NextRequest): Promise<Response> {
                   field === "reasoning" ||
                   (partID !== undefined && reasoningParts.has(partID));
                 // Real answer text (not reasoning) counts as content for
-                // empty-turn detection — observed in BOTH phases.
+                // empty-turn detection.
                 if (!isReasoning && field === "text") {
-                  if (inSubagentPhase) subagentProducedContent = true;
-                  else mainProducedContent = true;
-                }
-                // Suppress text/reasoning deltas during the sub-agent phase —
-                // the user sees the roadmap bar update but not "Synced." text.
-                if (!inSubagentPhase) {
-                  if (isReasoning) {
-                    emit({ type: "reasoning", delta });
-                  } else if (field === "text") {
-                    emit({ type: "text", delta });
-                  }
+                  producedContent = true;
+                  assistantText += delta;
+                  emit({ type: "text", delta });
+                } else if (isReasoning) {
+                  emit({ type: "reasoning", delta });
                 }
               }
             } else if (type === "message.part.updated") {
@@ -671,29 +565,23 @@ export async function POST(req: NextRequest): Promise<Response> {
                 typeof part.id === "string" &&
                 typeof part.tool === "string"
               ) {
-                // A tool call counts as content for empty-turn detection
-                // (both phases — the sub-agent's roadmap_* calls count too).
-                if (inSubagentPhase) subagentProducedContent = true;
-                else mainProducedContent = true;
-                // Emit tool events only for the main agent. Roadmap-sync tools are
-                // intentionally hidden; the user sees only the progress bar update.
-                if (!inSubagentPhase) {
-                  emit({
-                    type: "tool",
-                    id: part.id,
-                    name: part.tool,
-                    status:
-                      (part.state?.status as
-                        | "pending"
-                        | "running"
-                        | "completed"
-                        | "error") ?? "pending",
-                    title: part.state?.title,
-                    input: part.state?.input,
-                    output: part.state?.output,
-                    error: part.state?.error,
-                  });
-                }
+                // A tool call counts as content for empty-turn detection.
+                producedContent = true;
+                emit({
+                  type: "tool",
+                  id: part.id,
+                  name: part.tool,
+                  status:
+                    (part.state?.status as
+                      | "pending"
+                      | "running"
+                      | "completed"
+                      | "error") ?? "pending",
+                  title: part.state?.title,
+                  input: part.state?.input,
+                  output: part.state?.output,
+                  error: part.state?.error,
+                });
 
                 // Emit live roadmap frame whenever mark_done / mark_undone
                 // completes — gives the UI real-time progress without waiting
@@ -740,23 +628,10 @@ export async function POST(req: NextRequest): Promise<Response> {
                 | { type?: string }
                 | undefined;
               const statusType = statusObj?.type ?? "idle";
-              // Only emit status frames for the main agent turn, not the sub-agent —
-              // otherwise the UI would flash a spurious "idle" between turns.
-              if (!inSubagentPhase) {
-                emit({ type: "status", status: statusType });
-              }
+              emit({ type: "status", status: statusType });
 
               if (statusType === "busy") {
                 sawBusy = true;
-                if (inSubagentPhase) {
-                  // The sub-agent is genuinely running — cancel the watchdog and
-                  // wait for its idle to finish the stream.
-                  subagentBusy = true;
-                  if (subagentWatchdog) {
-                    clearTimeout(subagentWatchdog);
-                    subagentWatchdog = null;
-                  }
-                }
               } else if (statusType === "idle") {
                 if (await handleIdleSignal()) {
                   await doFinish();
@@ -765,9 +640,7 @@ export async function POST(req: NextRequest): Promise<Response> {
               }
             } else if (type === "session.idle") {
               // Terminal event emitted once when the agent finishes its turn.
-              if (!inSubagentPhase) {
-                emit({ type: "status", status: "idle" });
-              }
+              emit({ type: "status", status: "idle" });
               if (await handleIdleSignal()) {
                 await doFinish();
                 break;

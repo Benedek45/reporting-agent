@@ -22,13 +22,15 @@ function workspaceGuidance(): string {
 }
 
 const VISIBLE_REPLY_GUARD =
-  "## Output format — wrap your visible reply in <reply>...</reply>\n" +
-  "Do any internal planning, file-reading notes, tool reasoning, or self-instructions FIRST " +
-  "(or keep them in your reasoning channel). Then write the message the user should see, wrapped " +
-  "in <reply> and </reply> tags. ONLY the text inside <reply>...</reply> is shown to the user; " +
-  "everything outside the tags is discarded. Always include BOTH tags, even for a one-line reply. " +
-  "Never put planning such as `The skill is loaded`, `Now I need to`, `I will combine`, " +
-  "`The user uploaded`, `There is no .md version`, or a `Plan:` section inside the <reply> tags.";
+  "## Output format\n" +
+  "Wrap your visible reply in <reply>...</reply>. Put your answer between the tags.\n" +
+  "After </reply>, list any checklist items you obtained data for this turn:\n" +
+  "<reply>\n" +
+  "Thanks for the details. Could you upload your energy bills?\n" +
+  "</reply>\n" +
+  "PROGRESS: entity legal name; fiscal year period; reporting framework\n" +
+  "Separate items with semicolons. If no new data, omit the PROGRESS line.\n" +
+  "Never put planning inside <reply> tags.";
 
 export async function POST(req: NextRequest): Promise<Response> {
   try {

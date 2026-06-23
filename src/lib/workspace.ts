@@ -778,9 +778,10 @@ export async function renderRoadmapForContext(
     `## Progress roadmap — ${state.doneSteps}/${state.totalSteps} complete (${state.pct}%)`
   );
   lines.push(
-    "Read-only reference of what has been collected and what still remains. " +
-      "`[x]` = data obtained, `[ ]` = still open. Progress is updated " +
-      "automatically after each turn — you do NOT need to call any roadmap tool."
+    "`[x]` = data obtained, `[ ]` = still open. After your reply, tell the " +
+    "system which items you obtained data for: `PROGRESS: item; item; item` " +
+    "(semicolon-separated, fuzzy-matched; an uploaded document counts as data). " +
+    "Omit the line if nothing was obtained this turn. Never edit `roadmap.md`."
   );
   for (const sec of state.sections) {
     lines.push("", `### ${sec.title}`);
@@ -789,6 +790,157 @@ export async function renderRoadmapForContext(
     }
   }
   return lines.join("\n");
+}
+
+// ── Deterministic roadmap progress application (BFF-owned) ───────────────────
+// The MAIN agent emits a <progress> tag listing the checklist items it just
+// satisfied (plain structured text — reliable even for weak local models, which
+// intermittently empty-turn on tool CALLS). The BFF parses that tag and flips
+// the matching checkboxes here, deterministically — no model tool-call required.
+// This logic is ported from mcp/roadmap/index.mjs (the same fuzzy-matcher) so
+// the canonical roadmap.md the progress bar reads is updated identically.
+
+const ROADMAP_STOPWORDS = new Set([
+  "the", "a", "an", "and", "or", "of", "to", "for", "in", "on", "at", "by",
+  "with", "from", "is", "are", "be", "this", "that", "your", "their", "its",
+  "data", "info", "information", "section",
+]);
+const ROADMAP_TASK_RE = /^(\s*[-*]\s+\[)([ xX])(\]\s+)(.*)$/;
+const ROADMAP_MATCH_THRESHOLD = 0.5;
+
+function roadmapNormalize(label: string): string {
+  return String(label)
+    .toLowerCase()
+    .replace(/[*_`#>]/g, " ")
+    .replace(/[^a-z0-9\s]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function roadmapTokenize(label: string): string[] {
+  return roadmapNormalize(label)
+    .split(" ")
+    .filter((t) => t.length > 0 && !ROADMAP_STOPWORDS.has(t));
+}
+
+function roadmapMatchScore(query: string, candidate: string): number {
+  const nq = roadmapNormalize(query);
+  const nc = roadmapNormalize(candidate);
+  if (!nq || !nc) return 0;
+  if (nq === nc) return 2;
+  const qTokens = roadmapTokenize(query);
+  const cTokens = new Set(roadmapTokenize(candidate));
+  if (qTokens.length === 0) return 0;
+  let shared = 0;
+  for (const t of qTokens) if (cTokens.has(t)) shared += 1;
+  let score = shared / qTokens.length;
+  if (nc.includes(nq) || nq.includes(nc)) score += 0.5;
+  return score;
+}
+
+/**
+ * Parses a progress block out of an assistant reply. Two supported formats:
+ *   1. <progress>done: a; b\nundone: c</progress> (legacy)
+ *   2. PROGRESS: item; item; item (simple one-liner, preferred)
+ * `done:`/`undone:` lines and PROGRESS items are split on `;` or `,`.
+ * Returns null if no progress block is present.
+ */
+export function parseProgressTag(
+  text: string
+): { done: string[]; undone: string[] } | null {
+  // Format 2: PROGRESS: item; item (simple one-liner)
+  const pline = /(?:^|\n)\s*PROGRESS\s*:\s*(.+)/i.exec(text);
+  if (pline) {
+    const items = pline[1]
+      .split(/[;,]/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+    return { done: items, undone: [] };
+  }
+  // Format 1: <progress> block (legacy)
+  const m = /<progress>([\s\S]*?)<\/progress>/i.exec(text);
+  if (!m) return null;
+  const body = m[1];
+  const pick = (key: string): string[] => {
+    const line = new RegExp(`(?:^|\\n)\\s*${key}\\s*:\\s*(.+)`, "i").exec(body);
+    if (!line) return [];
+    return line[1]
+      .split(/[;,]/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
+  };
+  return { done: pick("done"), undone: pick("undone") };
+}
+
+/**
+ * Deterministically flips roadmap.md checkboxes for the given item descriptions.
+ * `doneItems` fuzzy-match against UNCHECKED items → `- [x]`; `undoneItems` match
+ * CHECKED items → `- [ ]`. Atomic write. Returns the new RoadmapState (with the
+ * canonical-denominator insurance from readRoadmapState), or null if no roadmap.
+ */
+export async function applyRoadmapProgress(
+  sessionId: string,
+  doneItems: string[],
+  undoneItems: string[]
+): Promise<RoadmapState | null> {
+  if (doneItems.length === 0 && undoneItems.length === 0) {
+    return readRoadmapState(sessionId);
+  }
+  const text = await getRoadmapTextFromFile(sessionId);
+  if (!text) return readRoadmapState(sessionId);
+
+  const lines = text.split("\n");
+
+  const flip = (queries: string[], markDone: boolean): boolean => {
+    // Candidate task lines: when marking done, match OPEN items; when un-marking, DONE.
+    const candidates: { lineIdx: number; label: string }[] = [];
+    for (let i = 0; i < lines.length; i++) {
+      const mm = ROADMAP_TASK_RE.exec(lines[i].replace(/\s+$/, ""));
+      if (!mm) continue;
+      const isDone = mm[2].toLowerCase() === "x";
+      if (markDone ? !isDone : isDone) {
+        candidates.push({ lineIdx: i, label: mm[4].trim() });
+      }
+    }
+    const usedLineIdx = new Set<number>();
+    const newChar = markDone ? "x" : " ";
+    let changed = false;
+    for (const query of queries) {
+      if (typeof query !== "string" || query.trim() === "") continue;
+      let best: { lineIdx: number; label: string } | null = null;
+      let bestScore = 0;
+      for (const c of candidates) {
+        if (usedLineIdx.has(c.lineIdx)) continue;
+        const score = roadmapMatchScore(query, c.label);
+        if (score > bestScore) {
+          bestScore = score;
+          best = c;
+        }
+      }
+      if (best && bestScore >= ROADMAP_MATCH_THRESHOLD) {
+        usedLineIdx.add(best.lineIdx);
+        const mm = ROADMAP_TASK_RE.exec(lines[best.lineIdx].replace(/\s+$/, ""));
+        if (mm) {
+          lines[best.lineIdx] = `${mm[1]}${newChar}${mm[3]}${mm[4]}`;
+          changed = true;
+        }
+      }
+    }
+    return changed;
+  };
+
+  const c1 = flip(doneItems, true);
+  const c2 = flip(undoneItems, false);
+
+  if (c1 || c2) {
+    try {
+      const wsDir = await workspaceDirForSession(sessionId);
+      await atomicWriteFile(path.join(wsDir, "roadmap.md"), lines.join("\n"));
+    } catch (e) {
+      console.debug("[workspace] applyRoadmapProgress write failed:", e);
+    }
+  }
+  return readRoadmapState(sessionId);
 }
 
 /**
