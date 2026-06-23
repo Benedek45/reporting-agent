@@ -82,8 +82,15 @@ const GREETING_RE =
 const PROGRESS_TAG_RE = /<progress>[\s\S]*?<\/progress>/gi;
 const PROGRESS_LINE_RE = /(?:^|\n)\s*PROGRESS\s*:[\s\S]*?(?:\n|$)/gi;
 
+// Qwen (and some Gemma builds) leak chain-of-thought into the CONTENT channel
+// wrapped in pseudo tags like <antThinking>…</antThinking> or <thinking>…</thinking>.
+// Strip those blocks so they never reach the user even without a <reply> wrapper.
+const THINKING_TAG_RE =
+  /<(antthinking|thinking|think|thought)>[\s\S]*?<\/\1>/gi;
+
 export function cleanVisibleReply(text: string, streaming = false): string {
   const cleaned = stripDcpTags(text)
+    .replace(THINKING_TAG_RE, "")
     .replace(PROGRESS_TAG_RE, "")
     .replace(PROGRESS_LINE_RE, "")
     .trimEnd();

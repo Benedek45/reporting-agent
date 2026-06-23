@@ -138,7 +138,10 @@ function buildNotifyText(n: NotifyPayload): string {
     "\n\nThen do these steps IN ORDER:\n" +
     "1. Fold the data into `output/report.md` (create it from the template if it " +
     "does not exist yet, using `[DATA NEEDED: …]` for anything still missing).\n" +
-    "2. Give the user a one-line summary of what you found and what you still need.";
+    "2. ALWAYS reply to the user in their language: briefly confirm what you " +
+    "recorded, then CONTINUE the interview by asking for the next documents or " +
+    "information you still need (pick the most important still-missing items). " +
+    "Never end your turn silently — the user is waiting for your next question.";
 
   if (n.kind === "upload") {
     const fresh = n.files.filter((f) => !f.diff);
@@ -370,6 +373,16 @@ export async function POST(req: NextRequest): Promise<Response> {
         // content" if we saw a TEXT delta or a TOOL call during it (reasoning-only
         // counts as empty). Reset before each (re)fire.
         let producedContent = false;
+        // Visible-answer-text detection (separate from producedContent). A turn can
+        // do tool work (read/write) but emit ZERO visible text — a known intermittent
+        // local-model behaviour. When that happens on a user-facing turn we fire a
+        // CONTINUATION turn so the agent confirms + asks for the next documents/info,
+        // instead of leaving the user with no question to answer.
+        let sawText = false;
+        let continuationFired = false;
+        let inContinuationPhase = false;
+        let continuationText = "";
+        let continuationSystem = "";
         let retries = 0;
         // Hidden roadmap-sync turn (fired after the main turn, like a notify turn).
         // subagentFired: the sync prompt has been sent. inSubagentPhase: we are now
@@ -485,6 +498,41 @@ export async function POST(req: NextRequest): Promise<Response> {
           }
         };
 
+        // Fire a VISIBLE continuation turn. Used when a user-facing turn did tool
+        // work (read/write) but produced no visible text — the agent must keep the
+        // interview moving by confirming what it recorded and asking for the next
+        // documents/information. Same agent/model/session; its reply IS shown (only
+        // its auto-generated user prompt is hidden in the UI history).
+        const fireContinuation = async (): Promise<boolean> => {
+          try {
+            const goalText = await getGoalText(sessionId).catch(() => "");
+            const roadmapCtx = await renderRoadmapForContext(sessionId);
+            continuationSystem = [
+              goalText,
+              workspaceGuidance(directory),
+              roadmapCtx,
+              "Reply in the same language the user writes in unless they ask otherwise.",
+              VISIBLE_REPLY_GUARD,
+            ]
+              .filter(Boolean)
+              .join("\n\n");
+            continuationText =
+              "[Continue — automated] You have finished reviewing the uploaded material " +
+              "and updating the report. Now reply to the user in their language: briefly " +
+              "confirm what you just recorded, then CONTINUE the interview by asking for " +
+              "the next documents or information you still need. Use the roadmap above to " +
+              "choose the most important still-open items, and ask specific, concrete " +
+              "questions. Do NOT call any tools — just write the reply.";
+            await promptAsync(sessionId, continuationText, {
+              directory,
+              system: continuationSystem,
+            });
+            return true;
+          } catch {
+            return false;
+          }
+        };
+
         // Decide what to do when an idle signal arrives (from either
         // `session.status {idle}` or the terminal `session.idle`). Returns true
         // if the caller should doFinish()+break.
@@ -493,23 +541,51 @@ export async function POST(req: NextRequest): Promise<Response> {
           if (!sawBusy) return false;
 
           if (!inSubagentPhase) {
-            // MAIN turn just went idle.
+            // MAIN or CONTINUATION turn just went idle.
             // Empty turn (no answer text, no tool calls) → re-fire the same prompt.
             if (!producedContent && retries < MAX_EMPTY_RETRIES) {
               retries++;
               sawBusy = false;
               producedContent = false;
+              sawText = false;
               try {
-                await promptAsync(sessionId, text, { directory, system });
+                const refireText = inContinuationPhase ? continuationText : text;
+                const refireSystem = inContinuationPhase
+                  ? continuationSystem
+                  : system;
+                await promptAsync(sessionId, refireText, {
+                  directory,
+                  system: refireSystem,
+                });
                 return false; // keep the stream open for the retry's cycle
               } catch {
                 return true; // re-fire failed → finish
               }
             }
-            // Main turn done → fire the hidden roadmap-sync turn (best-effort).
+            // The turn did work (tools) but produced NO visible text → drive a
+            // continuation so the agent confirms + asks the next question. Only for
+            // user-facing turns (a real user message or an upload notify), and only once.
+            if (
+              !inContinuationPhase &&
+              !continuationFired &&
+              !sawText &&
+              (userText !== undefined || notify !== undefined)
+            ) {
+              continuationFired = true;
+              inContinuationPhase = true;
+              sawBusy = false;
+              producedContent = false;
+              sawText = false;
+              if (await fireContinuation()) {
+                return false; // keep the stream open for the continuation's cycle
+              }
+              // Couldn't fire the continuation → fall through to the sync turn.
+            }
+            // Main/continuation done → fire the hidden roadmap-sync turn (best-effort).
             if (!subagentFired) {
               subagentFired = true;
               inSubagentPhase = true;
+              inContinuationPhase = false;
               subagentBusy = false;
               sawBusy = false;
               if (await fireRoadmapSync()) {
@@ -577,6 +653,7 @@ export async function POST(req: NextRequest): Promise<Response> {
                 // empty-turn detection.
                 if (!isReasoning && field === "text") {
                   producedContent = true;
+                  sawText = true;
                   // Suppress the hidden roadmap-sync turn's reply text.
                   if (!inSubagentPhase) emit({ type: "text", delta });
                 } else if (isReasoning) {

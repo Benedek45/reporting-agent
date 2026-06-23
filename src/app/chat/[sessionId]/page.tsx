@@ -267,6 +267,9 @@ export default function ChatPage() {
   // "Roadmap updated" chip emitted when doneSteps actually increases.
   const NOTIFY_PREFIX = "[Workspace update — not a user message]";
   const ROADMAP_SYNC_PREFIX = "[Roadmap sync — automated]";
+  // The continuation prompt is auto-generated; hide the PROMPT but keep its
+  // assistant reply (that reply is the whole point — the next interview question).
+  const CONTINUE_PREFIX = "[Continue — automated]";
 
   // Map a history message to UIMessage, or null to skip it.
   const mapHistoryMessage = (
@@ -285,6 +288,8 @@ export default function ChatPage() {
     ) {
       return null;
     }
+    // Hide the auto-generated continuation PROMPT (its assistant reply stays).
+    if (m.role === "user" && m.text.startsWith(CONTINUE_PREFIX)) return null;
     const isNotify = m.role === "user" && m.text.startsWith(NOTIFY_PREFIX);
     const chipText = isNotify
       ? m.text.slice(NOTIFY_PREFIX.length).trim().split("\n")[0].trim()

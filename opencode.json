@@ -52,7 +52,7 @@
           "name": "Qwen 3.6 27B (256K)",
           "limit": {
             "context": 262144,
-            "output": 8192
+            "output": 32768
           }
         }
       }
