@@ -495,35 +495,40 @@ and picking up stray configs — the original collision cause).
     corrects/retracts something (both share one `flipItems(args, markDone)` engine).
     `roadmap_status {workspace_dir}` returns the checklist with exact labels. A
     trailing `/output` on `workspace_dir` is normalized off; paths are validated
-    under `/workspaces`. **Current ownership model:** the main `compliance` agent
-    receives the roadmap only as read-only context and is explicitly denied the
-    `roadmap_*` tools in `opencode.json`; it should never call roadmap tools or
-    edit `roadmap.md`. After every main turn, `/api/chat/stream` runs a dedicated
-    `roadmap-sync` subagent synchronously on the SAME session/event stream. Only
-    that subagent receives `roadmapSyncGuidance(directory)` with the exact
-    `workspace_dir` and permission to call `roadmap_mark_done` / `roadmap_mark_undone`.
-    Its text/reasoning/tool chatter is hidden from the user; the visible feedback is
-    just the progress bar and a live **"Roadmap updated"** system chip when
-    `doneSteps` increases. This replaced the earlier background fire-and-forget sync,
-    which raced with upload notify turns and produced empty assistant messages.
-    **The subagent has NO hardcoded model** — `opencode.json` omits `model` for
-    `roadmap-sync`, so `promptAsync`'s `DEFAULT_MODEL` (= the main turn's model,
-    `OPENCODE_MODEL`) applies; the sync always runs on the SAME model as the main
-    agent. **Gotcha (fixed):** injecting the main agent's `VISIBLE_REPLY_GUARD`
-    (with its file/skill examples) into the narrow sync prompt made the subagent
-    echo the `<env>` context block and call ZERO tools (roadmap stuck at 0). The
-    sync system is now just `roadmapSyncGuidance(directory)` + the read-only
-    checklist, and the sync user message is an explicit "call roadmap_mark_done for
-    every item that now has data" directive (not a cryptic "Sync."). Do NOT add the
-    reply-guard or other unrelated instructions to the sync turn. **Do NOT use
-    opencode `revert` to scrub the sync exchange from the thread** — `revert` (see
+    under `/workspaces`. **Ownership model (current):** the main `compliance` agent
+    OWNS the roadmap tools (NOT denied in `opencode.json`) and is told to call
+    `roadmap_mark_done` inline via `workspaceGuidance` + the per-turn injected
+    checklist (`renderRoadmapForContext`). Because weak local models (Qwen3.6:27b /
+    Gemma via Ollama) reliably call read/write/edit but INTERMITTENTLY SKIP the
+    roadmap tool, `/api/chat/stream` ALSO auto-fires a **hidden roadmap-sync turn**
+    after the main turn finishes — exactly like an upload-notify turn, but
+    auto-triggered. It is fired to the **SAME `compliance` agent** (NOT a separate
+    subagent — `fireRoadmapSync()` calls `promptAsync` with no `agent` override, so
+    `DEFAULT_AGENT`=compliance and `DEFAULT_MODEL`=`OPENCODE_MODEL` apply) on the
+    same session/event stream, with system = `workspaceGuidance(directory)` +
+    `renderRoadmapForContext` (NO `VISIBLE_REPLY_GUARD` — see the b37 env-echo
+    gotcha) and an explicit user directive: "[Roadmap sync — automated] … call
+    roadmap_mark_done for EVERY item that now has data …". During this sync turn
+    (`inSubagentPhase`) the BFF SUPPRESSES the turn's text, reasoning, tool, and
+    status frames — the ONLY visible effect is the roadmap bar moving (the live
+    `roadmap` frame is still emitted when `roadmap_mark_done`/`mark_undone`
+    completes) plus a **"Roadmap updated"** system chip when `doneSteps` increases.
+    The UI hides the `[Roadmap sync — automated]` prompt + its reply in history
+    (`mapHistoryMessage` flatMap). **Hang guard:** if the sync turn degenerates into
+    an empty turn (goes idle without ever going busy — a local-model quirk), a
+    `SUBAGENT_WATCHDOG_MS = 20_000` timer force-finishes the stream; a genuine sync
+    run clears the watchdog on its `busy` edge and finishes on its real idle
+    (`subagentBusy`). This replaced both the earlier background fire-and-forget sync
+    (raced with notify turns → empty assistant messages) AND the short-lived
+    PROGRESS-tag approach (Qwen ignored the tag just as it ignored the tool inline).
+    **Do NOT use opencode `revert` to scrub the sync exchange** — `revert` (see
     `vendor/.../session/revert.ts:71-72`) calls `snap.restore`/`snap.revert(patches)`
-    and can roll back workspace file changes, which would undo the `roadmap.md` write.
-    The sync messages are instead kept tiny and filtered from the UI (see below).
-    `workspace.ts` `readRoadmapState` also keeps the original 56-item denominator if
-    a rogue rewrite ever shrinks the live file (defense in depth). Verified e2e:
-    roadmap updates complete within the same SSE turn and the stream only sends
-    `done` after the sync subagent also goes idle.
+    and can roll back the `roadmap.md` write; the sync messages are kept tiny and
+    filtered from the UI instead. `workspace.ts` `readRoadmapState` also keeps the
+    original 56-item denominator if a rogue rewrite ever shrinks the live file
+    (defense in depth). Verified e2e (Qwen3.6:27b): a 5-fact turn → main agent
+    replied (visible), hidden sync turn marked 0→4/50, only `skill` tool visible
+    (sync's `roadmap_mark_done` suppressed), stream `done` in 68s with no hang.
   - `time` (**enabled**): `get_current_time` — zero-dependency stdio MCP. It only
     returns the current date/time; it never schedules or auto-fires. Separately,
     the BFF injects the current date/time via per-turn `system` on the first user
