@@ -32,28 +32,46 @@ import type { StreamEvent, TodoItem } from "@/types";
  * unchanged. Covers the merged workspace folder, deliverable presentation, and
  * roadmap upkeep.
  */
-function workspaceGuidance(directory: string): string {
+/**
+ * Workspace guidance for the MAIN compliance agent.
+ * Roadmap tool instructions are intentionally omitted here — a dedicated
+ * roadmap-sync sub-agent runs automatically after every turn and owns all
+ * roadmap_mark_done / roadmap_mark_undone calls.
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function workspaceGuidance(_directory: string): string {
   return (
-    "## Workspace, deliverables & roadmap\n" +
+    "## Workspace & deliverables\n" +
     "- The documents the user uploads AND the report you write live in the `output/` " +
     "folder. Write the report to `output/report.md`.\n" +
     "- `report.md` is shown to the user automatically. If you produce any OTHER " +
     "deliverable file, call the `present_file` tool with its absolute path so the " +
     "user sees it under 'Presented'.\n" +
-    "- The user's progress bar is driven by a fixed checklist. To record progress, " +
-    "call the `roadmap_mark_done` tool. Pass `workspace_dir` = `" +
+    "- The progress bar below is updated automatically after each turn — you do NOT " +
+    "need to call any roadmap tool yourself."
+  );
+}
+
+/**
+ * Workspace + roadmap guidance for the ROADMAP-SYNC sub-agent only.
+ * This is the single place where roadmap_mark_done / roadmap_mark_undone are mentioned.
+ */
+function roadmapSyncGuidance(directory: string): string {
+  return (
+    "## Roadmap sync task\n" +
+    "Your ONLY job is to call `roadmap_mark_done` and/or `roadmap_mark_undone` based " +
+    "on the conversation history above.\n\n" +
+    "Rules:\n" +
+    "1. Call `roadmap_mark_done` with `workspace_dir` = `" +
     directory +
-    "` and `items` = an array of short descriptions of the checklist items whose " +
-    "data you have now OBTAINED from a sourced document (a confirmed answer from the " +
-    "user or an uploaded file). You do NOT need to have written the data into the " +
-    "report first — collecting it is enough to mark the item done. You do not need " +
-    "exact wording -- the tool fuzzy-matches your description to the checklist.\n" +
-    "- If an item you marked earlier turns out wrong (a contradiction is found, a " +
-    "source is removed/replaced, or the user corrects or retracts it), re-open it " +
-    "by calling the `roadmap_mark_undone` tool the same way.\n" +
-    "- Do NOT edit `roadmap.md` yourself and do NOT create `output/roadmap.md`. The " +
-    "`roadmap_mark_done` / `roadmap_mark_undone` tools are the ONLY correct way to " +
-    "update progress; they flip the right checkboxes in the canonical file for you."
+    "` and `items` = short descriptions of EVERY checklist item where data was " +
+    "OBTAINED in the latest exchange (user confirmed it, or it appears in an " +
+    "uploaded document). Fuzzy-matching is used — use natural descriptions.\n" +
+    "2. Call `roadmap_mark_undone` with the same `workspace_dir` for any item that " +
+    "was previously marked done but is now known to be wrong (contradiction found, " +
+    "source replaced, or user corrected/retracted it).\n" +
+    "3. Do NOT write to the report, do NOT ask questions, do NOT produce any visible " +
+    "reply beyond <reply>Synced.</reply>."
   );
 }
 
@@ -377,9 +395,15 @@ export async function POST(req: NextRequest): Promise<Response> {
 
         let sawBusy = false;
         let done = false;
-        // Set to true when roadmap_mark_done completes during this turn — used
-        // to decide whether to fire a background roadmap-sync sub-agent.
-        let roadmapMarkDoneCalled = false;
+        // Phase tracking for the sequential roadmap-sync sub-agent.
+        // After the main agent goes idle, we fire the sub-agent on the SAME session
+        // and event stream — the stream stays open until the sub-agent also goes idle.
+        // This prevents race conditions that arose when the sub-agent was fired as a
+        // background fire-and-forget after close().
+        let subagentFired = false;
+        // During the sub-agent phase we suppress text/reasoning deltas so the user
+        // only sees the roadmap bar update, not the "<reply>Synced.</reply>" text.
+        let inSubagentPhase = false;
         // partIDs whose deltas are the model's internal reasoning (not the answer)
         const reasoningParts = new Set<string>();
         // tool-call part ids whose `read` output we've already counted toward
@@ -454,39 +478,6 @@ export async function POST(req: NextRequest): Promise<Response> {
           emit({ type: "done" });
           if (timeoutHandle) clearTimeout(timeoutHandle);
           close();
-
-          // Background roadmap-sync sub-agent: fire when the main turn was a
-          // real user message AND roadmap_mark_done was not called. The agent
-          // sees the full session history so it can infer what items to mark.
-          // Prefix is detected by mapHistoryMessage → rendered as a system chip.
-          if (!roadmapMarkDoneCalled && userText && !notify) {
-            const ROADMAP_SYNC_PREFIX = "[Roadmap sync — automated] ";
-            void (async () => {
-              try {
-                const roadmapCtx = await renderRoadmapForContext(sessionId);
-                const syncSystem = [
-                  workspaceGuidance(directory),
-                  roadmapCtx,
-                  "## Roadmap sync\n" +
-                    "Based on the conversation history above, call " +
-                    "`roadmap_mark_done` for EVERY checklist item where data " +
-                    "was OBTAINED in the latest exchange (the user provided it " +
-                    "or you confirmed it from an uploaded document). " +
-                    "Do NOT ask questions, do NOT write to the report. " +
-                    "Wrap your reply in <reply>Synced.</reply> only.",
-                  VISIBLE_REPLY_GUARD,
-                ]
-                  .filter(Boolean)
-                  .join("\n\n");
-                await promptAsync(sessionId, ROADMAP_SYNC_PREFIX + "Sync.", {
-                  directory,
-                  system: syncSystem,
-                });
-              } catch {
-                // Non-fatal background task
-              }
-            })();
-          }
         };
 
         const reader = body.getReader();
@@ -531,7 +522,9 @@ export async function POST(req: NextRequest): Promise<Response> {
               const field = props["field"] as string | undefined;
               const delta = props["delta"] as string | undefined;
               const partID = props["partID"] as string | undefined;
-              if (typeof delta === "string") {
+              // Suppress text/reasoning deltas during the sub-agent phase —
+              // the user sees the roadmap bar update but not "Synced." text.
+              if (!inSubagentPhase && typeof delta === "string") {
                 const isReasoning =
                   field === "reasoning" ||
                   (partID !== undefined && reasoningParts.has(partID));
@@ -591,7 +584,6 @@ export async function POST(req: NextRequest): Promise<Response> {
                     part.tool === "roadmap_mark_undone") &&
                   part.state?.status === "completed"
                 ) {
-                  roadmapMarkDoneCalled = true;
                   void readRoadmapState(sessionId)
                     .then((rm) => {
                       if (rm) emit({ type: "roadmap", roadmap: rm });
@@ -629,19 +621,78 @@ export async function POST(req: NextRequest): Promise<Response> {
                 | { type?: string }
                 | undefined;
               const statusType = statusObj?.type ?? "idle";
-              emit({ type: "status", status: statusType });
+              // Only emit status frames for the main agent turn, not the sub-agent —
+              // otherwise the UI would flash a spurious "idle" between turns.
+              if (!inSubagentPhase) {
+                emit({ type: "status", status: statusType });
+              }
 
               if (statusType === "busy") {
                 sawBusy = true;
               } else if (statusType === "idle" && sawBusy) {
-                await doFinish();
-                break;
+                if (!subagentFired && userText && !notify) {
+                  // Phase transition: main turn done → fire roadmap-sync sub-agent.
+                  // Keep the stream open — the sub-agent runs synchronously here.
+                  subagentFired = true;
+                  inSubagentPhase = true;
+                  sawBusy = false; // reset for the sub-agent busy→idle cycle
+                  try {
+                    const roadmapCtx = await renderRoadmapForContext(sessionId);
+                    const syncSystem = [
+                      roadmapSyncGuidance(directory),
+                      roadmapCtx,
+                      VISIBLE_REPLY_GUARD,
+                    ]
+                      .filter(Boolean)
+                      .join("\n\n");
+                    await promptAsync(
+                      sessionId,
+                      "[Roadmap sync — automated] Sync.",
+                      { directory, system: syncSystem }
+                    );
+                    // Sub-agent turn is now running — continue the event loop.
+                  } catch {
+                    // Sub-agent failed to start — fall through to doFinish.
+                    await doFinish();
+                    break;
+                  }
+                } else {
+                  // Sub-agent turn (or notify/no-text turn) completed — finish.
+                  await doFinish();
+                  break;
+                }
               }
             } else if (type === "session.idle") {
               // Terminal event emitted once when the agent finishes its turn.
-              emit({ type: "status", status: "idle" });
-              await doFinish();
-              break;
+              if (!inSubagentPhase) {
+                emit({ type: "status", status: "idle" });
+              }
+              if (!subagentFired && userText && !notify) {
+                subagentFired = true;
+                inSubagentPhase = true;
+                sawBusy = false;
+                try {
+                  const roadmapCtx = await renderRoadmapForContext(sessionId);
+                  const syncSystem = [
+                    roadmapSyncGuidance(directory),
+                    roadmapCtx,
+                    VISIBLE_REPLY_GUARD,
+                  ]
+                    .filter(Boolean)
+                    .join("\n\n");
+                  await promptAsync(
+                    sessionId,
+                    "[Roadmap sync — automated] Sync.",
+                    { directory, system: syncSystem }
+                  );
+                } catch {
+                  await doFinish();
+                  break;
+                }
+              } else {
+                await doFinish();
+                break;
+              }
             }
           }
         }
