@@ -98,6 +98,10 @@ const VISIBLE_REPLY_GUARD =
 // resetting while the subagent works — so long fact-checks (minutes) no longer
 // get cut off. It only fires after genuine silence.
 const IDLE_TIMEOUT_MS = 300_000; // 5 minutes of complete silence
+// Backstop for the roadmap-sync sub-agent: if it never emits a busy we observe
+// (degenerate empty turn), force the stream closed this long after firing it.
+// Cleared as soon as the sub-agent goes busy, so a genuine sync run is unaffected.
+const SUBAGENT_WATCHDOG_MS = 20_000;
 const MAX_CONTEXT_FILE_BYTES = Number(
   process.env.MAX_CONTEXT_FILE_BYTES || 200_000
 );
@@ -398,6 +402,11 @@ export async function POST(req: NextRequest): Promise<Response> {
         // During the sub-agent phase we suppress text/reasoning deltas so the user
         // only sees the roadmap bar update, not the "<reply>Synced.</reply>" text.
         let inSubagentPhase = false;
+        // Set true once the sub-agent actually goes busy. We finish the stream on
+        // the FIRST idle seen after that. A watchdog backstops the degenerate case
+        // where the sub-agent produces an empty turn and never emits a busy we see.
+        let subagentBusy = false;
+        let subagentWatchdog: ReturnType<typeof setTimeout> | null = null;
         // partIDs whose deltas are the model's internal reasoning (not the answer)
         const reasoningParts = new Set<string>();
         // tool-call part ids whose `read` output we've already counted toward
@@ -471,6 +480,7 @@ export async function POST(req: NextRequest): Promise<Response> {
           }
           emit({ type: "done" });
           if (timeoutHandle) clearTimeout(timeoutHandle);
+          if (subagentWatchdog) clearTimeout(subagentWatchdog);
           close();
         };
 
@@ -495,10 +505,43 @@ export async function POST(req: NextRequest): Promise<Response> {
                 "Then reply exactly <reply>Synced.</reply> and nothing else.",
               { agent: "roadmap-sync", directory, system: syncSystem }
             );
+            // Backstop: if the sub-agent produces an empty turn and never emits a
+            // busy we observe (so the busy→idle completion path never triggers),
+            // force the stream closed after a short grace window. Cleared the
+            // moment the sub-agent actually goes busy (see the busy handler).
+            subagentWatchdog = setTimeout(() => {
+              void doFinish();
+            }, SUBAGENT_WATCHDOG_MS);
             return true;
           } catch {
             return false;
           }
+        };
+
+        // Decide what to do when an idle signal arrives (from either
+        // `session.status {idle}` or the terminal `session.idle`). Returns true
+        // if the caller should doFinish()+break. Robust against the degenerate
+        // empty sub-agent turn (handled by subagentBusy + the watchdog).
+        const handleIdleSignal = async (): Promise<boolean> => {
+          if (!inSubagentPhase) {
+            // Main turn. Ignore any stray idle before the turn actually ran.
+            if (!sawBusy) return false;
+            if (!subagentFired) {
+              // Main turn finished → fire the roadmap-sync sub-agent and keep
+              // the stream open for its busy→idle cycle.
+              subagentFired = true;
+              inSubagentPhase = true;
+              if (!(await fireRoadmapSync())) return true; // failed → finish
+              return false;
+            }
+            return true; // defensive (shouldn't reach here)
+          }
+          // Sub-agent phase.
+          if (subagentBusy) return true; // it ran and is now idle → finish
+          // Otherwise this is the main turn's trailing idle and the sub-agent
+          // has not gone busy yet — ignore it; the watchdog backstops the case
+          // where the sub-agent never goes busy at all.
+          return false;
         };
 
         const reader = body.getReader();
@@ -653,45 +696,27 @@ export async function POST(req: NextRequest): Promise<Response> {
 
               if (statusType === "busy") {
                 sawBusy = true;
-              } else if (statusType === "idle" && sawBusy) {
-                if (!subagentFired) {
-                  // Phase transition: main turn done → fire roadmap-sync sub-agent.
-                  // Keep the stream open — the sub-agent runs synchronously here.
-                  subagentFired = true;
-                  inSubagentPhase = true;
-                  sawBusy = false; // reset for the sub-agent busy→idle cycle
-                  if (!(await fireRoadmapSync())) {
-                    // Sub-agent failed to start — fall through to doFinish.
-                    await doFinish();
-                    break;
+                if (inSubagentPhase) {
+                  // The sub-agent is genuinely running — cancel the watchdog and
+                  // wait for its idle to finish the stream.
+                  subagentBusy = true;
+                  if (subagentWatchdog) {
+                    clearTimeout(subagentWatchdog);
+                    subagentWatchdog = null;
                   }
-                  // Sub-agent turn is now running — continue the event loop.
-                } else {
-                  // Sub-agent turn (or notify/no-text turn) completed — finish.
+                }
+              } else if (statusType === "idle") {
+                if (await handleIdleSignal()) {
                   await doFinish();
                   break;
                 }
               }
             } else if (type === "session.idle") {
               // Terminal event emitted once when the agent finishes its turn.
-              // After we fire the roadmap-sync sub-agent, the engine can still
-              // deliver the main turn's trailing session.idle. Ignore it until
-              // the sub-agent has produced its own busy→idle cycle.
-              if (inSubagentPhase && !sawBusy) {
-                continue;
-              }
               if (!inSubagentPhase) {
                 emit({ type: "status", status: "idle" });
               }
-              if (!subagentFired) {
-                subagentFired = true;
-                inSubagentPhase = true;
-                sawBusy = false;
-                if (!(await fireRoadmapSync())) {
-                  await doFinish();
-                  break;
-                }
-              } else {
+              if (await handleIdleSignal()) {
                 await doFinish();
                 break;
               }
