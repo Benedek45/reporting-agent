@@ -547,6 +547,21 @@ export async function POST(req: NextRequest): Promise<Response> {
                   error: part.state?.error,
                 });
 
+                // Emit live roadmap frame whenever mark_done / mark_undone
+                // completes — gives the UI real-time progress without waiting
+                // for doFinish at the end of the turn.
+                if (
+                  (part.tool === "roadmap_mark_done" ||
+                    part.tool === "roadmap_mark_undone") &&
+                  part.state?.status === "completed"
+                ) {
+                  void readRoadmapState(sessionId)
+                    .then((rm) => {
+                      if (rm) emit({ type: "roadmap", roadmap: rm });
+                    })
+                    .catch(() => {});
+                }
+
                 // Attribute file content the agent reads to the Documents
                 // bucket of the context breakdown (not Conversation).
                 if (

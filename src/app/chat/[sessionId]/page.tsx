@@ -239,31 +239,39 @@ export default function ChatPage() {
     }
   }, [sessionId]);
 
+  // Notify turns are submitted as user messages (the only role opencode
+  // supports for inbound prompts) but should render as system chips.
+  const NOTIFY_PREFIX = "[Workspace update — not a user message]";
+  const mapHistoryMessage = (m: MessageHistoryItem): UIMessage => {
+    const isNotify = m.role === "user" && m.text.startsWith(NOTIFY_PREFIX);
+    return {
+      id: m.id,
+      ocId: m.id,
+      role: isNotify ? "system" : (m.role as UIMessage["role"]),
+      // Show a brief summary instead of the full internal prompt.
+      text: isNotify
+        ? m.text.slice(NOTIFY_PREFIX.length).trim().split("\n")[0].trim()
+        : m.text,
+      createdAt: m.createdAt,
+      tools: m.tools
+        .map((t, i) => ({
+          id: `${m.id}-tool-${i}`,
+          name: t.name,
+          status: (t.status as ToolEvent["status"]) ?? "completed",
+          input: t.input,
+          output: t.output,
+        }))
+        .filter((t) => t.status !== "error"),
+      pinned: false,
+    };
+  };
+
   const refreshHistory = useCallback(async () => {
     try {
       const res = await fetch(`/api/session/${encodeURIComponent(sessionId)}/messages`);
       if (!res.ok) return;
       const data = (await res.json()) as { messages: MessageHistoryItem[] };
-      // pinned is derived from pinnedIds at render — no need to carry it here.
-      setMessages(
-        data.messages.map((m) => ({
-          id: m.id,
-          ocId: m.id,
-          role: m.role,
-          text: m.text,
-          createdAt: m.createdAt,
-          tools: m.tools
-            .map((t, i) => ({
-              id: `${m.id}-tool-${i}`,
-              name: t.name,
-              status: (t.status as ToolEvent["status"]) ?? "completed",
-              input: t.input,
-              output: t.output,
-            }))
-            .filter((t) => t.status !== "error"),
-          pinned: false, // derived from pinnedIds at render
-        }))
-      );
+      setMessages(data.messages.map(mapHistoryMessage));
     } catch {
       // Non-fatal
     }
@@ -280,25 +288,7 @@ export default function ChatPage() {
       .then((r) => (r.ok ? r.json() : null))
       .then((data: { messages: MessageHistoryItem[] } | null) => {
         if (data && data.messages.length > 0) {
-          setMessages(
-            data.messages.map((m) => ({
-              id: m.id,
-              ocId: m.id,
-              role: m.role,
-              text: m.text,
-              createdAt: m.createdAt,
-              tools: m.tools
-                .map((t, i) => ({
-                  id: `${m.id}-tool-${i}`,
-                  name: t.name,
-                  status: (t.status as ToolEvent["status"]) ?? "completed",
-                  input: t.input,
-                  output: t.output,
-                }))
-                .filter((t) => t.status !== "error"),
-              pinned: false,
-            }))
-          );
+          setMessages(data.messages.map(mapHistoryMessage));
         } else {
           // Try welcome from sessionStorage
           try {
