@@ -138,6 +138,9 @@ export default function ChatPage() {
 
   // Roadmap progress (top bar)
   const [roadmap, setRoadmap] = useState<RoadmapState | null>(null);
+  // Track previous doneSteps so we can emit a "Roadmap updated" chip only
+  // when items are actually newly checked.
+  const prevRoadmapDoneRef = useRef<number>(-1);
 
   // In-app file editor
   const [editingFile, setEditingFile] = useState<string | null>(null);
@@ -222,7 +225,10 @@ export default function ChatPage() {
       setContextPct(data.pct);
       setTodos(data.todos);
       if (data.breakdown) setBreakdown(data.breakdown);
-      if (data.roadmap !== undefined) setRoadmap(data.roadmap);
+      if (data.roadmap !== undefined) {
+        if (data.roadmap) prevRoadmapDoneRef.current = data.roadmap.doneSteps;
+        setRoadmap(data.roadmap);
+      }
     } catch {
       // Non-fatal
     }
@@ -239,20 +245,33 @@ export default function ChatPage() {
     }
   }, [sessionId]);
 
-  // Notify and roadmap-sync turns are submitted as user messages (the only
-  // role opencode supports for inbound prompts) but render as system chips.
+  // Notify turns are submitted as user messages but render as system chips.
+  // Roadmap-sync turns and their following assistant responses are hidden
+  // entirely — progress feedback comes from the roadmap bar and a live
+  // "Roadmap updated" chip emitted when doneSteps actually increases.
   const NOTIFY_PREFIX = "[Workspace update — not a user message]";
   const ROADMAP_SYNC_PREFIX = "[Roadmap sync — automated]";
-  const mapHistoryMessage = (m: MessageHistoryItem): UIMessage => {
-    const isNotify =
-      m.role === "user" &&
-      (m.text.startsWith(NOTIFY_PREFIX) ||
-        m.text.startsWith(ROADMAP_SYNC_PREFIX));
-    // For the chip label: strip the prefix and show a brief one-liner.
+
+  // Map a history message to UIMessage, or null to skip it.
+  const mapHistoryMessage = (
+    m: MessageHistoryItem,
+    i: number,
+    arr: MessageHistoryItem[]
+  ): UIMessage | null => {
+    const isSync = m.role === "user" && m.text.startsWith(ROADMAP_SYNC_PREFIX);
+    // Skip the sync prompt itself
+    if (isSync) return null;
+    // Skip the assistant response that immediately follows a sync prompt
+    if (
+      m.role === "assistant" &&
+      i > 0 &&
+      arr[i - 1].text.startsWith(ROADMAP_SYNC_PREFIX)
+    ) {
+      return null;
+    }
+    const isNotify = m.role === "user" && m.text.startsWith(NOTIFY_PREFIX);
     const chipText = isNotify
-      ? m.text.startsWith(NOTIFY_PREFIX)
-        ? m.text.slice(NOTIFY_PREFIX.length).trim().split("\n")[0].trim()
-        : "Roadmap synced"
+      ? m.text.slice(NOTIFY_PREFIX.length).trim().split("\n")[0].trim()
       : m.text;
     return {
       id: m.id,
@@ -261,8 +280,8 @@ export default function ChatPage() {
       text: isNotify ? chipText : m.text,
       createdAt: m.createdAt,
       tools: m.tools
-        .map((t, i) => ({
-          id: `${m.id}-tool-${i}`,
+        .map((t, idx) => ({
+          id: `${m.id}-tool-${idx}`,
           name: t.name,
           status: (t.status as ToolEvent["status"]) ?? "completed",
           input: t.input,
@@ -278,7 +297,12 @@ export default function ChatPage() {
       const res = await fetch(`/api/session/${encodeURIComponent(sessionId)}/messages`);
       if (!res.ok) return;
       const data = (await res.json()) as { messages: MessageHistoryItem[] };
-      setMessages(data.messages.map(mapHistoryMessage));
+      setMessages(
+        data.messages.flatMap((m, i, arr) => {
+          const mapped = mapHistoryMessage(m, i, arr);
+          return mapped ? [mapped] : [];
+        })
+      );
     } catch {
       // Non-fatal
     }
@@ -295,7 +319,12 @@ export default function ChatPage() {
       .then((r) => (r.ok ? r.json() : null))
       .then((data: { messages: MessageHistoryItem[] } | null) => {
         if (data && data.messages.length > 0) {
-          setMessages(data.messages.map(mapHistoryMessage));
+          setMessages(
+            data.messages.flatMap((m, i, arr) => {
+              const mapped = mapHistoryMessage(m, i, arr);
+              return mapped ? [mapped] : [];
+            })
+          );
         } else {
           // Try welcome from sessionStorage
           try {
@@ -430,6 +459,23 @@ export default function ChatPage() {
               break;
 
             case "roadmap":
+              if (
+                prevRoadmapDoneRef.current >= 0 &&
+                event.roadmap.doneSteps > prevRoadmapDoneRef.current
+              ) {
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: generateId(),
+                    role: "system",
+                    text: "Roadmap updated",
+                    createdAt: Date.now(),
+                    tools: [],
+                    pinned: false,
+                  },
+                ]);
+              }
+              prevRoadmapDoneRef.current = event.roadmap.doneSteps;
               setRoadmap(event.roadmap);
               break;
 
@@ -841,7 +887,11 @@ export default function ChatPage() {
                   )}
 
                 {/* Thinking indicator — the ONLY bubble while waiting for a visible reply */}
-                <Thinking active={busy && !visibleStreaming} reasoning={reasoningText} />
+                <Thinking
+                  active={busy && !visibleStreaming}
+                  reasoning={reasoningText}
+                  label={streamingTools.length > 0 ? "Working on it..." : "Thinking"}
+                />
               </>
             );
           })()}

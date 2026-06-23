@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from "react";
 interface ThinkingProps {
   active: boolean;
   reasoning?: string;
+  label?: string;
 }
 
 function formatElapsed(ms: number): string {
@@ -14,7 +15,7 @@ function formatElapsed(ms: number): string {
   return `${String(minutes).padStart(2, "0")}:${String(seconds).padStart(2, "0")}`;
 }
 
-export default function Thinking({ active, reasoning }: ThinkingProps) {
+export default function Thinking({ active, reasoning, label = "Thinking" }: ThinkingProps) {
   const [elapsed, setElapsed] = useState(0);
   const startRef = useRef<number | null>(null);
   const rafRef = useRef<number | null>(null);
@@ -58,7 +59,7 @@ export default function Thinking({ active, reasoning }: ThinkingProps) {
           <span />
           <span />
         </span>
-        <span className="thinking-label">Thinking</span>
+        <span className="thinking-label">{label}</span>
         <span className="thinking-timer">{formatElapsed(elapsed)}</span>
       </div>
       {reasoning ? <div className="thinking-reasoning">{reasoning}</div> : null}

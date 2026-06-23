@@ -159,15 +159,9 @@ function buildNotifyText(n: NotifyPayload): string {
   const prefix = "[Workspace update — not a user message] ";
   const tail =
     "\n\nThen do these steps IN ORDER:\n" +
-    "1. FIRST, call `roadmap_mark_done` for EVERY checklist item this document " +
-    "gives you data for. An uploaded document is sufficient evidence ON ITS OWN — " +
-    "do NOT wait for the user to confirm it, and do NOT require the data to be in " +
-    "the report first. If the file shows e.g. the fiscal year, energy use, water " +
-    "use, emissions, or headcount, mark those items now.\n" +
-    "2. THEN fold the data into `output/report.md` (create it from the template if " +
-    "it does not exist yet, using `[DATA NEEDED: …]` for anything still missing).\n" +
-    "3. FINALLY give the user a one-line summary of what you found and what you " +
-    "still need.";
+    "1. Fold the data into `output/report.md` (create it from the template if it " +
+    "does not exist yet, using `[DATA NEEDED: …]` for anything still missing).\n" +
+    "2. Give the user a one-line summary of what you found and what you still need.";
 
   if (n.kind === "upload") {
     const fresh = n.files.filter((f) => !f.diff);
@@ -195,7 +189,7 @@ function buildNotifyText(n: NotifyPayload): string {
   return (
     prefix +
     `The user ${verb} the following file(s). Review the changes below, update ` +
-    `the report and roadmap.md if they are affected, and briefly confirm what changed.\n\n` +
+    `the report if it is affected, and briefly confirm what changed.\n\n` +
     n.files.map(diffBlock).join("\n\n") +
     tail
   );
@@ -559,22 +553,25 @@ export async function POST(req: NextRequest): Promise<Response> {
                 typeof part.id === "string" &&
                 typeof part.tool === "string"
               ) {
-                // Emit tool event
-                emit({
-                  type: "tool",
-                  id: part.id,
-                  name: part.tool,
-                  status:
-                    (part.state?.status as
-                      | "pending"
-                      | "running"
-                      | "completed"
-                      | "error") ?? "pending",
-                  title: part.state?.title,
-                  input: part.state?.input,
-                  output: part.state?.output,
-                  error: part.state?.error,
-                });
+                // Emit tool events only for the main agent. Roadmap-sync tools are
+                // intentionally hidden; the user sees only the progress bar update.
+                if (!inSubagentPhase) {
+                  emit({
+                    type: "tool",
+                    id: part.id,
+                    name: part.tool,
+                    status:
+                      (part.state?.status as
+                        | "pending"
+                        | "running"
+                        | "completed"
+                        | "error") ?? "pending",
+                    title: part.state?.title,
+                    input: part.state?.input,
+                    output: part.state?.output,
+                    error: part.state?.error,
+                  });
+                }
 
                 // Emit live roadmap frame whenever mark_done / mark_undone
                 // completes — gives the UI real-time progress without waiting
@@ -630,7 +627,7 @@ export async function POST(req: NextRequest): Promise<Response> {
               if (statusType === "busy") {
                 sawBusy = true;
               } else if (statusType === "idle" && sawBusy) {
-                if (!subagentFired && userText && !notify) {
+                if (!subagentFired) {
                   // Phase transition: main turn done → fire roadmap-sync sub-agent.
                   // Keep the stream open — the sub-agent runs synchronously here.
                   subagentFired = true;
@@ -648,7 +645,7 @@ export async function POST(req: NextRequest): Promise<Response> {
                     await promptAsync(
                       sessionId,
                       "[Roadmap sync — automated] Sync.",
-                      { directory, system: syncSystem }
+                      { agent: "roadmap-sync", directory, system: syncSystem }
                     );
                     // Sub-agent turn is now running — continue the event loop.
                   } catch {
@@ -664,10 +661,16 @@ export async function POST(req: NextRequest): Promise<Response> {
               }
             } else if (type === "session.idle") {
               // Terminal event emitted once when the agent finishes its turn.
+              // After we fire the roadmap-sync sub-agent, the engine can still
+              // deliver the main turn's trailing session.idle. Ignore it until
+              // the sub-agent has produced its own busy→idle cycle.
+              if (inSubagentPhase && !sawBusy) {
+                continue;
+              }
               if (!inSubagentPhase) {
                 emit({ type: "status", status: "idle" });
               }
-              if (!subagentFired && userText && !notify) {
+              if (!subagentFired) {
                 subagentFired = true;
                 inSubagentPhase = true;
                 sawBusy = false;
@@ -683,7 +686,7 @@ export async function POST(req: NextRequest): Promise<Response> {
                   await promptAsync(
                     sessionId,
                     "[Roadmap sync — automated] Sync.",
-                    { directory, system: syncSystem }
+                    { agent: "roadmap-sync", directory, system: syncSystem }
                   );
                 } catch {
                   await doFinish();

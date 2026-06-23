@@ -7,23 +7,17 @@ export const runtime = "nodejs";
 
 import { NextRequest } from "next/server";
 import { sendMessage } from "@/lib/opencode";
-import {
-  sessionDirectory,
-  renderRoadmapForContext,
-} from "@/lib/workspace";
+import { renderRoadmapForContext } from "@/lib/workspace";
 
 // Minimal workspace guidance injected on the legacy non-streaming path so the
 // agent is aware of the merged folder layout and deliverable conventions.
-function workspaceGuidance(directory: string): string {
+function workspaceGuidance(): string {
   return (
     "Uploads and the report live in the `output/` folder; write the report to " +
-    "`output/report.md`. To record progress on the user's checklist, call the " +
-    "`roadmap_mark_done` tool with `workspace_dir` = `" +
-    directory +
-    "` and `items` = short descriptions of the completed checklist items (it " +
-    "fuzzy-matches and flips the right checkboxes). Do NOT edit `roadmap.md` " +
-    "yourself and never create `output/roadmap.md`. If you produce any other " +
-    "deliverable, call `present_file` with its absolute path."
+    "`output/report.md`. The progress roadmap is read-only context here and is " +
+    "updated automatically by a separate roadmap-sync step. Do NOT call roadmap " +
+    "tools or edit `roadmap.md`. If you produce any other deliverable, call " +
+    "`present_file` with its absolute path."
   );
 }
 
@@ -52,11 +46,10 @@ export async function POST(req: NextRequest): Promise<Response> {
       );
     }
 
-    const directory = await sessionDirectory(sessionId);
     const roadmapContext = await renderRoadmapForContext(sessionId);
 
     const system = [
-      workspaceGuidance(directory),
+      workspaceGuidance(),
       roadmapContext,
       VISIBLE_REPLY_GUARD,
     ]

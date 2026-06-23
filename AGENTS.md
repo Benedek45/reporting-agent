@@ -493,26 +493,23 @@ and picking up stray configs — the original collision cause).
     `- [x]`→`- [ ]`, so the agent can RE-OPEN an item when the fact-checker finds a
     contradiction, a source is removed/replaced with conflicting data, or the user
     corrects/retracts something (both share one `flipItems(args, markDone)` engine).
-    `roadmap_status {workspace_dir}` returns the
-    checklist with exact labels. A trailing `/output` on `workspace_dir` is
-    normalized off; paths validated under `/workspaces`. The per-turn
-    `WORKSPACE_GUIDANCE` injects the exact `workspace_dir` and tells the agent to
-    use this tool and **not** edit `roadmap.md` directly. `workspace.ts`
-    `readRoadmapState` also keeps the original 56-item denominator if a rogue
-    rewrite ever shrinks the live file (defense in depth). Verified e2e: a turn
-    went 0/56→3/56 via `roadmap_mark_done` with the denominator intact.
-    **The live checklist itself is injected into the per-turn `system` EVERY
-    turn** (`renderRoadmapForContext` in `workspace.ts`, pushed in
-    `chat/stream/route.ts` + `chat/route.ts` right after `workspaceGuidance`): the
-    full roadmap with current `[x]`/`[ ]` state is in context from the first turn,
-    so the model sees the whole plan and what remains **without** having to call
-    `roadmap_status` to discover it — weaker models (Gemma 4) reliably forget to.
-    Root-caused on a real session (`ses_110ce82b…`): the agent had called
-    `roadmap_mark_done` only **once** and `roadmap_status` **zero** times across 6
-    turns (1/51 marked) because it never saw the checklist. After injecting it,
-    one data-rich first turn marked **4/56** — precisely the engagement-setup items
-    supplied (entity, period, boundary, framework), correctly leaving unsupplied
-    items unchecked, no `output/roadmap.md`, denominator intact.
+    `roadmap_status {workspace_dir}` returns the checklist with exact labels. A
+    trailing `/output` on `workspace_dir` is normalized off; paths are validated
+    under `/workspaces`. **Current ownership model:** the main `compliance` agent
+    receives the roadmap only as read-only context and is explicitly denied the
+    `roadmap_*` tools in `opencode.json`; it should never call roadmap tools or
+    edit `roadmap.md`. After every main turn, `/api/chat/stream` runs a dedicated
+    `roadmap-sync` subagent synchronously on the SAME session/event stream. Only
+    that subagent receives `roadmapSyncGuidance(directory)` with the exact
+    `workspace_dir` and permission to call `roadmap_mark_done` / `roadmap_mark_undone`.
+    Its text/reasoning/tool chatter is hidden from the user; the visible feedback is
+    just the progress bar and a live **"Roadmap updated"** system chip when
+    `doneSteps` increases. This replaced the earlier background fire-and-forget sync,
+    which raced with upload notify turns and produced empty assistant messages.
+    `workspace.ts` `readRoadmapState` also keeps the original 56-item denominator if
+    a rogue rewrite ever shrinks the live file (defense in depth). Verified e2e:
+    roadmap updates complete within the same SSE turn and the stream only sends
+    `done` after the sync subagent also goes idle.
   - `time` (**enabled**): `get_current_time` — zero-dependency stdio MCP. It only
     returns the current date/time; it never schedules or auto-fires. Separately,
     the BFF injects the current date/time via per-turn `system` on the first user
