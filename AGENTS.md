@@ -907,10 +907,26 @@ two parallel `general` subagents; live-verified; pushed):
    22+8000+11434). Model: `qwen3.6:27b` (Alibaba Apache 2.0, 27B dense, 256K native context,
    Q4_K_M = 17GB, tool calling + thinking mode built in). **Key behavior**: Ollama returns
    thinking in a separate `reasoning` field (NOT in `content`) — the answer in `content` is
-   clean with no `<think>` tags. With small `max_tokens` (<200), thinking can exhaust the
-   budget; use `limit.output: 8192` (already set). `opencode.json` uses the same
+   clean with no `<think>` tags. **CRITICAL — `limit.output` must be GENEROUS for a
+   thinking model.** Qwen's reasoning routinely runs to thousands of tokens; if
+   `limit.output` is too low (we had `8192`) the engine sends that as `max_tokens`, the
+   reasoning consumes the ENTIRE budget, the generation hits `finish_reason:length`
+   BEFORE any content/answer is emitted → the turn returns **empty visible text**
+   (the "agent stopped / blank bubble / roadmap stuck at 0" symptom). FIX: set the
+   qwen model `limit.output: 32768` in `opencode.json` (verified: the agent then
+   completes its reasoning AND emits a full reply + inline `roadmap_mark_done`, e.g.
+   0→4/50, with a real continuation question). This is NOT a `max_tokens<200` edge
+   case — it bit us at 8192 in normal use. Two defenses were also added: (1) a VISIBLE
+   **continuation turn** in `chat/stream/route.ts` (`fireContinuation`) that auto-fires
+   when a user-facing turn did tool work but produced zero visible text — it makes the
+   agent confirm + ask the next question (its auto-prompt `[Continue — automated]` is
+   hidden in history, its reply is shown); (2) `cleanVisibleReply` now strips
+   `<antThinking>`/`<thinking>` blocks (Qwen leaks chain-of-thought into the CONTENT
+   channel as pseudo tags) and the chat shows a `.msg-fallback` ("Done — I've updated
+   the report.") instead of a blank bubble if a turn still ends text-less.
+   `opencode.json` uses the
    `gemma4-aws` provider (`@ai-sdk/openai-compatible`) pointing to `{env:GEMMA_BASE_URL}`;
-   model key is `qwen3.6:27b` with `limit: {context: 65536, output: 8192}`. Full verified
+   model key is `qwen3.6-256k:latest` with `limit: {context: 262144, output: 32768}`. Full verified
    e2e: the model produced a proper CSRD interview reply (219 chars) with `<reply>` wrapper
    intact via `/api/chat`.
 
