@@ -225,9 +225,19 @@ function tokenize(label) {
 }
 
 /**
- * Scores a query against a candidate label. Recall-oriented: how much of the
- * query's meaningful tokens are present in the candidate, with a substring bonus.
- * Returns a number in [0, ~1.3]; higher is better.
+ * Scores a query against a candidate label using the OVERLAP COEFFICIENT
+ * (shared tokens / size of the SMALLER token set), plus a substring bonus.
+ *
+ * Why overlap, not recall-of-query: the agent often names an item with a
+ * verbose, document-centric phrase ("supplier facility data 2024 with energy,
+ * water, audit"). The old `shared / queryTokens.length` put that long query in
+ * the denominator, so even a correct match scored far below threshold and the
+ * checkbox was never flipped. The overlap coefficient is symmetric in length —
+ * a long query that contains all of a concise checklist item's distinctive
+ * tokens (or vice-versa) scores ~1.0 — so reasonable wording matches regardless
+ * of how verbose either side is.
+ *
+ * Returns a number in [0, ~1.5]; higher is better.
  */
 function matchScore(query, candidate) {
   const nq = normalizeLabel(query);
@@ -235,13 +245,20 @@ function matchScore(query, candidate) {
   if (!nq || !nc) return 0;
   if (nq === nc) return 2; // exact normalized match
 
-  const qTokens = tokenize(query);
-  const cTokens = new Set(tokenize(candidate));
-  if (qTokens.length === 0) return 0;
+  const qSet = new Set(tokenize(query));
+  const cSet = new Set(tokenize(candidate));
+  if (qSet.size === 0 || cSet.size === 0) return 0;
 
   let shared = 0;
-  for (const t of qTokens) if (cTokens.has(t)) shared += 1;
-  let score = shared / qTokens.length; // recall of query tokens
+  for (const t of cSet) if (qSet.has(t)) shared += 1;
+
+  if (shared === 0) {
+    // No token overlap — only a substring containment can rescue it.
+    return nc.includes(nq) || nq.includes(nc) ? 0.6 : 0;
+  }
+
+  // Overlap coefficient: shared / size of the smaller token set.
+  let score = shared / Math.min(qSet.size, cSet.size);
 
   // Substring bonus (either direction) — strong signal of intent.
   if (nc.includes(nq) || nq.includes(nc)) score += 0.5;

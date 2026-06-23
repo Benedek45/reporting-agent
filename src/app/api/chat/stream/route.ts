@@ -42,8 +42,15 @@ function workspaceGuidance(directory: string): string {
     "user sees it under 'Presented'.\n" +
     "- To record progress, call the `roadmap_mark_done` tool. Pass `workspace_dir` = `" +
     directory +
-    "` and `items` = short descriptions of checklist items whose data you just " +
-    "OBTAINED. Mark items the SAME turn you get the data. Fuzzy-matching is used.\n" +
+    "` and `items` = an array with ONE ENTRY PER CHECKLIST ITEM you just satisfied. " +
+    "Write each entry using the WORDING OF THE CHECKLIST ITEM shown in the roadmap " +
+    "above (copy its key words), NOT a description of the uploaded document.\n" +
+    "- If one document supplies data for SEVERAL checklist items, list each item " +
+    "SEPARATELY. Example: a supplier file with energy, water and audit data should be " +
+    'items: ["Energy consumption & mix", "Water withdrawal & discharge", "supplier ' +
+    'social assessment"] — NOT one entry like "supplier facility data obtained".\n' +
+    "- Mark items the SAME turn you get the data. Fuzzy-matching is used, so the " +
+    "wording need not be exact, but it must target ONE checklist line each.\n" +
     "- To re-open a wrong item, call `roadmap_mark_undone` with the same workspace_dir.\n" +
     "- Do NOT edit `roadmap.md` yourself — the tools are the only correct way."
   );
@@ -484,8 +491,11 @@ export async function POST(req: NextRequest): Promise<Response> {
               .join("\n\n");
             const syncText =
               "[Roadmap sync — automated] Review the conversation above. " +
-              "Call roadmap_mark_done for EVERY checklist item that now has data " +
-              "(a confirmed answer from the user or an uploaded document). " +
+              "Call roadmap_mark_done with ONE array entry PER checklist item that now " +
+              "has data (a confirmed answer from the user or an uploaded document). " +
+              "Word each entry like the matching checklist line above (copy its key " +
+              "words); if one document covers several items, list each item separately " +
+              "— never lump them into a single document description. " +
               "Call roadmap_mark_undone for any item now contradicted. " +
               "Then reply exactly <reply>Synced.</reply>.";
             await promptAsync(sessionId, syncText, {
