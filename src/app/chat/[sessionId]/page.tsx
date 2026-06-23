@@ -239,19 +239,26 @@ export default function ChatPage() {
     }
   }, [sessionId]);
 
-  // Notify turns are submitted as user messages (the only role opencode
-  // supports for inbound prompts) but should render as system chips.
+  // Notify and roadmap-sync turns are submitted as user messages (the only
+  // role opencode supports for inbound prompts) but render as system chips.
   const NOTIFY_PREFIX = "[Workspace update — not a user message]";
+  const ROADMAP_SYNC_PREFIX = "[Roadmap sync — automated]";
   const mapHistoryMessage = (m: MessageHistoryItem): UIMessage => {
-    const isNotify = m.role === "user" && m.text.startsWith(NOTIFY_PREFIX);
+    const isNotify =
+      m.role === "user" &&
+      (m.text.startsWith(NOTIFY_PREFIX) ||
+        m.text.startsWith(ROADMAP_SYNC_PREFIX));
+    // For the chip label: strip the prefix and show a brief one-liner.
+    const chipText = isNotify
+      ? m.text.startsWith(NOTIFY_PREFIX)
+        ? m.text.slice(NOTIFY_PREFIX.length).trim().split("\n")[0].trim()
+        : "Roadmap synced"
+      : m.text;
     return {
       id: m.id,
       ocId: m.id,
       role: isNotify ? "system" : (m.role as UIMessage["role"]),
-      // Show a brief summary instead of the full internal prompt.
-      text: isNotify
-        ? m.text.slice(NOTIFY_PREFIX.length).trim().split("\n")[0].trim()
-        : m.text,
+      text: isNotify ? chipText : m.text,
       createdAt: m.createdAt,
       tools: m.tools
         .map((t, i) => ({

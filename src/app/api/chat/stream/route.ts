@@ -377,6 +377,9 @@ export async function POST(req: NextRequest): Promise<Response> {
 
         let sawBusy = false;
         let done = false;
+        // Set to true when roadmap_mark_done completes during this turn — used
+        // to decide whether to fire a background roadmap-sync sub-agent.
+        let roadmapMarkDoneCalled = false;
         // partIDs whose deltas are the model's internal reasoning (not the answer)
         const reasoningParts = new Set<string>();
         // tool-call part ids whose `read` output we've already counted toward
@@ -451,6 +454,39 @@ export async function POST(req: NextRequest): Promise<Response> {
           emit({ type: "done" });
           if (timeoutHandle) clearTimeout(timeoutHandle);
           close();
+
+          // Background roadmap-sync sub-agent: fire when the main turn was a
+          // real user message AND roadmap_mark_done was not called. The agent
+          // sees the full session history so it can infer what items to mark.
+          // Prefix is detected by mapHistoryMessage → rendered as a system chip.
+          if (!roadmapMarkDoneCalled && userText && !notify) {
+            const ROADMAP_SYNC_PREFIX = "[Roadmap sync — automated] ";
+            void (async () => {
+              try {
+                const roadmapCtx = await renderRoadmapForContext(sessionId);
+                const syncSystem = [
+                  workspaceGuidance(directory),
+                  roadmapCtx,
+                  "## Roadmap sync\n" +
+                    "Based on the conversation history above, call " +
+                    "`roadmap_mark_done` for EVERY checklist item where data " +
+                    "was OBTAINED in the latest exchange (the user provided it " +
+                    "or you confirmed it from an uploaded document). " +
+                    "Do NOT ask questions, do NOT write to the report. " +
+                    "Wrap your reply in <reply>Synced.</reply> only.",
+                  VISIBLE_REPLY_GUARD,
+                ]
+                  .filter(Boolean)
+                  .join("\n\n");
+                await promptAsync(sessionId, ROADMAP_SYNC_PREFIX + "Sync.", {
+                  directory,
+                  system: syncSystem,
+                });
+              } catch {
+                // Non-fatal background task
+              }
+            })();
+          }
         };
 
         const reader = body.getReader();
@@ -555,6 +591,7 @@ export async function POST(req: NextRequest): Promise<Response> {
                     part.tool === "roadmap_mark_undone") &&
                   part.state?.status === "completed"
                 ) {
+                  roadmapMarkDoneCalled = true;
                   void readRoadmapState(sessionId)
                     .then((rm) => {
                       if (rm) emit({ type: "roadmap", roadmap: rm });
