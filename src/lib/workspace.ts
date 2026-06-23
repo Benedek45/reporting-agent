@@ -778,10 +778,10 @@ export async function renderRoadmapForContext(
     `## Progress roadmap — ${state.doneSteps}/${state.totalSteps} complete (${state.pct}%)`
   );
   lines.push(
-    "`[x]` = data obtained, `[ ]` = still open. After your reply, tell the " +
-    "system which items you obtained data for: `PROGRESS: item; item; item` " +
-    "(semicolon-separated, fuzzy-matched; an uploaded document counts as data). " +
-    "Omit the line if nothing was obtained this turn. Never edit `roadmap.md`."
+    "`[x]` = data obtained, `[ ]` = still open. Mark items done the SAME turn " +
+    "you get the data — call `roadmap_mark_done` with short descriptions of the " +
+    "items you just satisfied (fuzzy-matching is used). Call `roadmap_mark_undone` " +
+    "to re-open an item. Do NOT edit `roadmap.md` yourself."
   );
   for (const sec of state.sections) {
     lines.push("", `### ${sec.title}`);

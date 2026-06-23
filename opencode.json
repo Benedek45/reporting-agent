@@ -91,9 +91,6 @@
         "webfetch": "allow",
         "websearch": "allow",
         "question": "deny",
-        "roadmap_mark_done": "deny",
-        "roadmap_mark_undone": "deny",
-        "roadmap_status": "deny",
         "skill": {
           "*": "deny",
           "csrd-esrs": "allow",

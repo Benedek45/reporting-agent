@@ -7,29 +7,26 @@ export const runtime = "nodejs";
 
 import { NextRequest } from "next/server";
 import { sendMessage } from "@/lib/opencode";
-import { renderRoadmapForContext } from "@/lib/workspace";
+import { renderRoadmapForContext, sessionDirectory } from "@/lib/workspace";
 
-// Minimal workspace guidance injected on the legacy non-streaming path so the
-// agent is aware of the merged folder layout and deliverable conventions.
-function workspaceGuidance(): string {
+function workspaceGuidance(directory: string): string {
   return (
     "Uploads and the report live in the `output/` folder; write the report to " +
-    "`output/report.md`. The progress roadmap is read-only context here and is " +
-    "updated automatically by a separate roadmap-sync step. Do NOT call roadmap " +
-    "tools or edit `roadmap.md`. If you produce any other deliverable, call " +
-    "`present_file` with its absolute path."
+    "`output/report.md`. Call `roadmap_mark_done` to mark checklist items done " +
+    "(workspace_dir=`" +
+    directory +
+    "`, items = short descriptions). Mark items the SAME turn you get the data. " +
+    "Call `roadmap_mark_undone` to re-open. Do NOT edit `roadmap.md`. " +
+    "If you produce any other deliverable, call `present_file`."
   );
 }
 
 const VISIBLE_REPLY_GUARD =
   "## Output format\n" +
   "Wrap your visible reply in <reply>...</reply>. Put your answer between the tags.\n" +
-  "After </reply>, list any checklist items you obtained data for this turn:\n" +
   "<reply>\n" +
-  "Thanks for the details. Could you upload your energy bills?\n" +
+  "Thanks for the details. Entity name and fiscal year noted.\n" +
   "</reply>\n" +
-  "PROGRESS: entity legal name; fiscal year period; reporting framework\n" +
-  "Separate items with semicolons. If no new data, omit the PROGRESS line.\n" +
   "Never put planning inside <reply> tags.";
 
 export async function POST(req: NextRequest): Promise<Response> {
@@ -49,9 +46,10 @@ export async function POST(req: NextRequest): Promise<Response> {
     }
 
     const roadmapContext = await renderRoadmapForContext(sessionId);
+    const directory = await sessionDirectory(sessionId);
 
     const system = [
-      workspaceGuidance(),
+      workspaceGuidance(directory),
       roadmapContext,
       VISIBLE_REPLY_GUARD,
     ]
