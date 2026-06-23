@@ -173,6 +173,10 @@ export default function ChatPage() {
   // (notifications fire as their own turns, queued behind any in-flight turn).
   const streamingRef = useRef(false);
   const notifyQueueRef = useRef<NotifyPayload[]>([]);
+  // Polling interval for SSE reconnection: when the page loads while the engine
+  // is still generating, we poll /live every 3s until the turn completes.
+  const resumePollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const resumePollChipId = useRef<string>("");
   // Ref to the latest runStream so flushNotifyQueue never captures a stale closure.
   const runStreamRef = useRef<(body: {
     sessionId: string;
@@ -335,11 +339,15 @@ export default function ChatPage() {
     void refreshState();
     void refreshReport();
 
-    // Load history; if empty, show welcome from sessionStorage
+    // Load history; if empty, show welcome from sessionStorage.
+    // After loading, poll `/live` to detect if the engine is still running
+    // (page was refreshed mid-turn), and resume when it finishes.
     fetch(`/api/session/${encodeURIComponent(sessionId)}/messages`)
       .then((r) => (r.ok ? r.json() : null))
-      .then((data: { messages: MessageHistoryItem[] } | null) => {
+      .then(async (data: { messages: MessageHistoryItem[] } | null) => {
+        let hasHistory = false;
         if (data && data.messages.length > 0) {
+          hasHistory = true;
           setMessages(
             data.messages.flatMap((m, i, arr) => {
               const mapped = mapHistoryMessage(m, i, arr);
@@ -367,6 +375,58 @@ export default function ChatPage() {
             // sessionStorage unavailable
           }
         }
+
+        if (!hasHistory) return;
+
+        // Check if the engine is still generating on this session.
+        try {
+          const liveRes = await fetch(
+            `/api/session/${encodeURIComponent(sessionId)}/live`
+          );
+          if (!liveRes.ok) return;
+          const live: { busy: boolean } = await liveRes.json();
+          if (!live.busy) return;
+
+          // Engine is busy — show a "Resuming" chip and poll every 3s.
+          const chipId = generateId();
+          resumePollChipId.current = chipId;
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: chipId,
+              role: "system",
+              text: "Resuming — the agent is still working…",
+              createdAt: Date.now(),
+              tools: [],
+              pinned: false,
+            },
+          ]);
+
+          const poll = setInterval(async () => {
+            try {
+              const r = await fetch(
+                `/api/session/${encodeURIComponent(sessionId)}/live`
+              );
+              if (!r.ok) {
+                clearInterval(poll);
+                return;
+              }
+              const l: { busy: boolean } = await r.json();
+              if (!l.busy) {
+                clearInterval(poll);
+                resumePollRef.current = null;
+                // Remove the chip and reload history
+                setMessages((prev) => prev.filter((m) => m.id !== chipId));
+                void refreshHistory();
+              }
+            } catch {
+              // Retry next interval
+            }
+          }, 3000);
+          resumePollRef.current = poll;
+        } catch {
+          // Non-fatal — /live may not be available yet
+        }
       })
       .catch(() => {
         // Non-fatal — try welcome fallback
@@ -391,10 +451,11 @@ export default function ChatPage() {
       });
   }, [sessionId, refreshFiles, refreshState, refreshReport]);
 
-  // Cleanup abort controller on unmount
+  // Cleanup on unmount
   useEffect(() => {
     return () => {
       abortRef.current?.abort();
+      if (resumePollRef.current) clearInterval(resumePollRef.current);
     };
   }, []);
 
