@@ -506,6 +506,20 @@ and picking up stray configs — the original collision cause).
     just the progress bar and a live **"Roadmap updated"** system chip when
     `doneSteps` increases. This replaced the earlier background fire-and-forget sync,
     which raced with upload notify turns and produced empty assistant messages.
+    **The subagent has NO hardcoded model** — `opencode.json` omits `model` for
+    `roadmap-sync`, so `promptAsync`'s `DEFAULT_MODEL` (= the main turn's model,
+    `OPENCODE_MODEL`) applies; the sync always runs on the SAME model as the main
+    agent. **Gotcha (fixed):** injecting the main agent's `VISIBLE_REPLY_GUARD`
+    (with its file/skill examples) into the narrow sync prompt made the subagent
+    echo the `<env>` context block and call ZERO tools (roadmap stuck at 0). The
+    sync system is now just `roadmapSyncGuidance(directory)` + the read-only
+    checklist, and the sync user message is an explicit "call roadmap_mark_done for
+    every item that now has data" directive (not a cryptic "Sync."). Do NOT add the
+    reply-guard or other unrelated instructions to the sync turn. **Do NOT use
+    opencode `revert` to scrub the sync exchange from the thread** — `revert` (see
+    `vendor/.../session/revert.ts:71-72`) calls `snap.restore`/`snap.revert(patches)`
+    and can roll back workspace file changes, which would undo the `roadmap.md` write.
+    The sync messages are instead kept tiny and filtered from the UI (see below).
     `workspace.ts` `readRoadmapState` also keeps the original 56-item denominator if
     a rogue rewrite ever shrinks the live file (defense in depth). Verified e2e:
     roadmap updates complete within the same SSE turn and the stream only sends
