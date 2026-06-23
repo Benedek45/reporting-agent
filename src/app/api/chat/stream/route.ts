@@ -474,6 +474,33 @@ export async function POST(req: NextRequest): Promise<Response> {
           close();
         };
 
+        // Fire the roadmap-sync sub-agent on the SAME session. It uses the SAME
+        // model as the main turn (the roadmap-sync agent has no hardcoded model,
+        // so promptAsync's DEFAULT_MODEL applies). The instruction lives in the
+        // user message + the agent prompt; we deliberately do NOT inject the
+        // VISIBLE_REPLY_GUARD here — its file/skill examples confused the narrow
+        // sync agent into echoing context instead of calling the tools.
+        const fireRoadmapSync = async (): Promise<boolean> => {
+          try {
+            const roadmapCtx = await renderRoadmapForContext(sessionId);
+            const syncSystem = [roadmapSyncGuidance(directory), roadmapCtx]
+              .filter(Boolean)
+              .join("\n\n");
+            await promptAsync(
+              sessionId,
+              "[Roadmap sync — automated] Review the conversation above. Call " +
+                "roadmap_mark_done for EVERY checklist item that now has data " +
+                "(a user answer or an uploaded document is enough). If an earlier " +
+                "item is now contradicted or retracted, call roadmap_mark_undone. " +
+                "Then reply exactly <reply>Synced.</reply> and nothing else.",
+              { agent: "roadmap-sync", directory, system: syncSystem }
+            );
+            return true;
+          } catch {
+            return false;
+          }
+        };
+
         const reader = body.getReader();
         const decoder = new TextDecoder();
         let buffer = "";
@@ -633,26 +660,12 @@ export async function POST(req: NextRequest): Promise<Response> {
                   subagentFired = true;
                   inSubagentPhase = true;
                   sawBusy = false; // reset for the sub-agent busy→idle cycle
-                  try {
-                    const roadmapCtx = await renderRoadmapForContext(sessionId);
-                    const syncSystem = [
-                      roadmapSyncGuidance(directory),
-                      roadmapCtx,
-                      VISIBLE_REPLY_GUARD,
-                    ]
-                      .filter(Boolean)
-                      .join("\n\n");
-                    await promptAsync(
-                      sessionId,
-                      "[Roadmap sync — automated] Sync.",
-                      { agent: "roadmap-sync", directory, system: syncSystem }
-                    );
-                    // Sub-agent turn is now running — continue the event loop.
-                  } catch {
+                  if (!(await fireRoadmapSync())) {
                     // Sub-agent failed to start — fall through to doFinish.
                     await doFinish();
                     break;
                   }
+                  // Sub-agent turn is now running — continue the event loop.
                 } else {
                   // Sub-agent turn (or notify/no-text turn) completed — finish.
                   await doFinish();
@@ -674,21 +687,7 @@ export async function POST(req: NextRequest): Promise<Response> {
                 subagentFired = true;
                 inSubagentPhase = true;
                 sawBusy = false;
-                try {
-                  const roadmapCtx = await renderRoadmapForContext(sessionId);
-                  const syncSystem = [
-                    roadmapSyncGuidance(directory),
-                    roadmapCtx,
-                    VISIBLE_REPLY_GUARD,
-                  ]
-                    .filter(Boolean)
-                    .join("\n\n");
-                  await promptAsync(
-                    sessionId,
-                    "[Roadmap sync — automated] Sync.",
-                    { agent: "roadmap-sync", directory, system: syncSystem }
-                  );
-                } catch {
+                if (!(await fireRoadmapSync())) {
                   await doFinish();
                   break;
                 }

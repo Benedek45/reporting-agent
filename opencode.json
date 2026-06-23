@@ -109,7 +109,6 @@
     "roadmap-sync": {
       "description": "Internal subagent that updates roadmap checklist progress after each main turn. It only calls roadmap MCP tools and never edits files or talks to the user.",
       "mode": "subagent",
-      "model": "opencode-go/deepseek-v4-flash",
       "temperature": 0,
       "prompt": "{file:./prompts/roadmap-sync.md}",
       "permission": {
