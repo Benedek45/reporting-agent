@@ -868,16 +868,35 @@ two parallel `general` subagents; live-verified; pushed):
    returns 674-char CSRD interview reply. DCP context-manager configured with percentage
    thresholds (hardCap 88%, nudges 45/62/75/45%) resolved against the 131K served window.
 
-   **L4 24GB Qwen 27B investigation (2026-06):** Attempted to run Qwen3.6-27B, Qwen3.5-27B,
-   and Qwen3.6-27B GGUF Q3 on the g6.2xlarge L4 24GB. All failed — the root cause is that
-   **Qwen3.5 and Qwen3.6 27B both use a Gated DeltaNet hybrid architecture** which requires
-   ~20 GiB GPU memory at 4-bit (AWQ or GPTQ), leaving no room for KV cache or CUDA graph
-   workspace on L4 24GB. GGUF Q3 (13.8 GB) would leave ~4 GiB headroom, but vLLM 0.23.0
-   (the latest stable) lacks GGUF weight-name mappings for the DeltaNet layers (`linear_attn.dt_bias`
-   etc.) — this is being fixed in vLLM main (PR #39559) but is not yet in a stable release.
-   **For Qwen 27B models: need L40S 48GB (g6e.xlarge, 48 GB)** where Qwen3.6-27B FP8 (28 GB)
-   fits with room for KV. The official vLLM recipe for `Qwen/Qwen3.6-27B-FP8` targets a
-   "single 40 GB GPU". g6e capacity was sold out at time of testing; revisit when available.
+   **Qwen3.6-27B via Ollama on g6e.xlarge L40S 48GB (2026-06, VERIFIED):** After failing to
+   run Qwen3.6-27B on L4 24GB (AWQ/GPTQ OOM; vLLM 0.23.0 lacks DeltaNet GGUF weight
+   mappings), obtained a **g6e.xlarge** (1× L40S 48GB, eu-central-1c) on-demand and deployed
+   via **Ollama** (not vLLM — Ollama/llama.cpp has native DeltaNet support in GGUF).
+   Running instance: `i-0966373546c314931`, public IP varies (stop when not in use; **USE
+   ON-DEMAND** — spot is instantly reclaimed on g6e). SSH key:
+   `D:\AGI_gent\gemma4-vllm-key.pem` (gitignored). Ollama setup:
+   ```
+   curl -fsSL https://ollama.com/install.sh | sh
+   # Configure system service to listen externally:
+   sudo mkdir -p /etc/systemd/system/ollama.service.d
+   sudo tee /etc/systemd/system/ollama.service.d/override.conf << 'EOF'
+   [Service]
+   Environment="OLLAMA_HOST=0.0.0.0"
+   Environment="OLLAMA_NUM_CTX=65536"
+   EOF
+   sudo systemctl daemon-reload && sudo systemctl restart ollama
+   ollama pull qwen3.6:27b   # 17GB Q4_K_M, ~2 min on L40S
+   ```
+   Endpoint: `http://<instance-ip>:11434/v1` (port 11434, SG `sg-0ef072c9e50e1cf42` opens
+   22+8000+11434). Model: `qwen3.6:27b` (Alibaba Apache 2.0, 27B dense, 256K native context,
+   Q4_K_M = 17GB, tool calling + thinking mode built in). **Key behavior**: Ollama returns
+   thinking in a separate `reasoning` field (NOT in `content`) — the answer in `content` is
+   clean with no `<think>` tags. With small `max_tokens` (<200), thinking can exhaust the
+   budget; use `limit.output: 8192` (already set). `opencode.json` uses the same
+   `gemma4-aws` provider (`@ai-sdk/openai-compatible`) pointing to `{env:GEMMA_BASE_URL}`;
+   model key is `qwen3.6:27b` with `limit: {context: 65536, output: 8192}`. Full verified
+   e2e: the model produced a proper CSRD interview reply (219 chars) with `<reply>` wrapper
+   intact via `/api/chat`.
 
    **Gemma E4B known limitations** (observed earlier on the smaller E4B model, not the 26B):
    - **Intermittent empty turns** — some turns produce 0 text + 0 tools, likely a Gemma
