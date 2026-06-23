@@ -389,7 +389,9 @@ export async function POST(req: NextRequest): Promise<Response> {
         // relaying the sync turn (its text/tools/status are suppressed). subagentBusy:
         // the sync turn actually started running (so we wait for its real idle rather
         // than the main turn's trailing idle). subagentWatchdog force-finishes if the
-        // sync turn never goes busy (degenerate empty turn).
+        // sync turn never goes busy (degenerate empty turn). It is armed on EVERY
+        // promptAsync for a follow-on turn and only cleared by doFinish() — never
+        // cleared on a busy edge so a busy-then-error path still terminates.
         let subagentFired = false;
         let inSubagentPhase = false;
         let subagentBusy = false;
@@ -490,7 +492,11 @@ export async function POST(req: NextRequest): Promise<Response> {
               directory,
               system: syncSystem,
             });
-            // Force-finish if the sync turn never goes busy (degenerate empty turn).
+            // Guaranteed backstop: arm the watchdog AFTER every follow-on promptAsync.
+            // It is only cleared by doFinish() — never on a busy edge — so a
+            // busy-then-session.error path (engine errors without emitting idle) still
+            // terminates within SUBAGENT_WATCHDOG_MS.
+            if (subagentWatchdog) clearTimeout(subagentWatchdog);
             subagentWatchdog = setTimeout(() => void doFinish(), SUBAGENT_WATCHDOG_MS);
             return true;
           } catch {
@@ -527,6 +533,10 @@ export async function POST(req: NextRequest): Promise<Response> {
               directory,
               system: continuationSystem,
             });
+            // Arm the watchdog for the continuation turn too — it is a follow-on
+            // promptAsync and must terminate even if the engine errors without idle.
+            if (subagentWatchdog) clearTimeout(subagentWatchdog);
+            subagentWatchdog = setTimeout(() => void doFinish(), SUBAGENT_WATCHDOG_MS);
             return true;
           } catch {
             return false;
@@ -757,13 +767,11 @@ export async function POST(req: NextRequest): Promise<Response> {
               if (statusType === "busy") {
                 sawBusy = true;
                 if (inSubagentPhase) {
-                  // The sync turn genuinely started — wait for its real idle,
-                  // so cancel the degenerate-empty watchdog.
+                  // The sync turn genuinely started — record that so handleIdleSignal
+                  // waits for its real idle. Do NOT clear the watchdog here: if the
+                  // engine goes busy then emits session.error without an idle, the
+                  // watchdog is the only backstop that terminates the stream.
                   subagentBusy = true;
-                  if (subagentWatchdog) {
-                    clearTimeout(subagentWatchdog);
-                    subagentWatchdog = null;
-                  }
                 }
               } else if (statusType === "idle") {
                 if (await handleIdleSignal()) {
@@ -778,6 +786,38 @@ export async function POST(req: NextRequest): Promise<Response> {
                 await doFinish();
                 break;
               }
+            } else if (type === "session.error") {
+              // The engine emits session.error when a turn fails (plugin hook
+              // throws, context overflow with auto-compaction disabled, provider
+              // error, etc.). In the ContextOverflow+auto-compaction path the
+              // engine does NOT emit a subsequent session.status{idle} — so
+              // without this handler the stream hangs forever.
+              //
+              // Payload: { sessionID, error: { type, message, ... } | undefined }
+              const errorPayload = props["error"] as
+                | { type?: string; message?: string }
+                | undefined;
+              const errorMsg =
+                (typeof errorPayload?.message === "string"
+                  ? errorPayload.message
+                  : undefined) ??
+                (typeof errorPayload?.type === "string"
+                  ? errorPayload.type
+                  : undefined) ??
+                "Agent error";
+
+              if (!inSubagentPhase) {
+                // Surface the error to the user only on the main/continuation turn.
+                // If we already streamed text (the main turn produced a good reply
+                // and only a follow-on errored), don't clobber the good reply —
+                // just finish silently.
+                if (!sawText) {
+                  emit({ type: "error", error: errorMsg });
+                }
+              }
+              // Always terminate — session.error is a terminal signal.
+              await doFinish();
+              break;
             }
           }
         }

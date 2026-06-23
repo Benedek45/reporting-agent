@@ -950,6 +950,45 @@ two parallel `general` subagents; live-verified; pushed):
    Verified: a content-producing turn fires zero retries (history stays clean, no
    duplicate user messages) and still syncs the roadmap (0→4/50).
 
+   **BFF live-stream finish bug FIXED (2026-06, `chat/stream/route.ts`).** A chat turn
+   could hang with the red stop button active even though the engine had already finished
+   and the correct reply was visible after a page refresh. Two root causes:
+   1. **`session.error` not handled (H3).** The SSE loop handled `session.status`,
+      `session.idle`, `message.part.delta/updated`, `todo.updated` — but NOT
+      `session.error`. The engine emits `session.error` on plugin-hook throws, context
+      overflow (auto-compaction path), and provider errors. In the ContextOverflow +
+      auto-compaction path (`processor.ts:935`) the engine emits `session.error` and
+      returns WITHOUT emitting a subsequent `session.status{idle}` — so the BFF loop
+      never got an idle signal → `handleIdleSignal()` never ran → `doFinish()` never
+      called → **hang**. Fix: added `else if (type === "session.error")` handler that
+      always calls `doFinish()`. If the main turn had already streamed text, the error
+      is swallowed (don't clobber the good reply); otherwise a user-visible error frame
+      is emitted. Hidden sync-phase errors are always swallowed (never surface to user).
+   2. **Watchdog cleared on busy edge.** The `subagentWatchdog` was cleared when the
+      sync turn went `busy` (`session.status{busy}`). If the engine then errored (emitting
+      `session.error` without idle), `subagentBusy=true` but no idle ever arrived →
+      `handleIdleSignal()` never ran → hang. Fix: the watchdog is now NEVER cleared on
+      a busy edge — only `doFinish()` clears it. The watchdog is also armed after EVERY
+      follow-on `promptAsync` (both `fireRoadmapSync` and `fireContinuation`), not just
+      the sync turn, so a busy-then-error path on any follow-on still terminates within
+      `SUBAGENT_WATCHDOG_MS = 20_000`.
+   **`session.error` wire format** (confirmed from `vendor/.../session/session.ts:366-374`
+   and `processor.ts:917-958`): SSE event `type = "session.error"`, `properties.sessionID`
+   (optional), `properties.error = { type, message, ... }` (the discriminated-union error
+   shape from `SessionV1.Assistant.fields.error`). In the ContextOverflow+auto-compaction
+   path the engine emits `session.error` then returns WITHOUT `status.set(idle)` — this
+   is the hang-causing path. In all other error paths `status.set(idle)` IS called after
+   `session.error`, so the `session.status{idle}` handler would have caught it eventually
+   — but the `session.error` handler now terminates immediately, which is faster and correct.
+   **`read:error` on the original hang session (ses_10bb71778ffe4bGWZx2Z3WVYW0):** the
+   uploaded file was `Raw_Supplier_Facility_Data_2024 (1).csv` (spaces + parens). The
+   model tried to read a path it constructed incorrectly (model error, not a BFF escaping
+   bug — `buildNotifyText` only mentions the filename in prose, not as a shell argument).
+   Verified: re-uploading the same filename and sending a notify turn now terminates
+   cleanly in 142s with `done` emitted (835 frames, 1103 text chars, 0 error frames).
+   Verified live (deepseek-v4-flash, 3 turns): turn 1 = 81.2s/777 frames/done; notify
+   turn = 142.3s/835 frames/done; turn 3 = 98.6s/883 frames/done. No hangs.
+
    For a production local-model test at this caliber, consider the **Gemma 4 26B A4B**
    on L40S 48GB (FP8 = 28.8GB, fits natively) which requires a further quota increase
    (`g6e.xlarge` fits at 4 vCPU; `g6e.2xlarge` needs 8). The NVFP4-on-L4 deployment proved
