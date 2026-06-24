@@ -204,10 +204,59 @@ def _fix_table_blank_lines(md_text: str) -> str:
     return "\n".join(out)
 
 
+# Matches a line that opens with a bold "Key:" label, e.g. **Organization:**
+# Used to detect definition-style header lines that should each start a new paragraph.
+_BOLD_KEY_LINE_RE = re.compile(r"^\*\*[^*]+:\*\*")
+
+
+def _fix_bold_definition_lines(md_text: str) -> str:
+    """
+    Models often write report headers as consecutive ``**Key:** Value`` lines
+    with only a single newline between them, e.g.:
+
+        **Organization:** Acme Corp
+        **Reporting period:** FY2024
+        **Boundary:** Single entity
+
+    Python-Markdown treats single newlines as inline joins, so the whole
+    block collapses into one paragraph in the PDF — all labels run together
+    with no line breaks.
+
+    This inserts a blank line before any ``**Key:**``-style line that
+    immediately follows a non-blank line, turning each definition into its
+    own paragraph. Lines that already have a preceding blank line are left
+    untouched. Fenced code blocks are skipped.
+    """
+    lines = md_text.split("\n")
+    out: list[str] = []
+    in_fence = False
+    fence_marker = ""
+
+    for line in lines:
+        stripped = line.lstrip()
+        if not in_fence and (stripped.startswith("```") or stripped.startswith("~~~")):
+            in_fence = True
+            fence_marker = stripped[:3]
+            out.append(line)
+            continue
+        if in_fence:
+            if stripped.startswith(fence_marker):
+                in_fence = False
+            out.append(line)
+            continue
+
+        if _BOLD_KEY_LINE_RE.match(line) and out and out[-1].strip():
+            out.append("")  # blank line before each bold-key definition line
+
+        out.append(line)
+
+    return "\n".join(out)
+
+
 def _markdown_to_html(md_text: str) -> str:
-    body = markdown.markdown(
-        _fix_table_blank_lines(md_text), extensions=_MD_EXTENSIONS
-    )
+    md_text = _fix_table_blank_lines(md_text)
+    md_text = _fix_bold_definition_lines(md_text)
+    body = markdown.markdown(md_text, extensions=_MD_EXTENSIONS)
     return (
         "<!DOCTYPE html><html><head>"
         '<meta charset="utf-8">'
