@@ -16,9 +16,12 @@ import {
   readSessionState,
   readRoadmapState,
   renderRoadmapForContext,
+  readDcpTotalCompressedTokens,
   readUploadMarkdown,
   addLoadedContextBytes,
   recordReadDocBytes,
+  recordCompressionSavings,
+  applyPendingCompressionSavings,
   sumReadDocBytes,
   bumpTimeIfDue,
   getAgentsText,
@@ -361,6 +364,10 @@ export async function POST(req: NextRequest): Promise<Response> {
         // Step 5: open upstream SSE BEFORE prompting to avoid missing early events
         upstreamRes = await openEventStream(directory);
 
+        const dcpCompressedTokensAtStart = await readDcpTotalCompressedTokens(
+          sessionId
+        );
+
         // Step 6: fire the async prompt, then increment the message count.
         // Incrementing AFTER a successful prompt ensures the count stays in sync
         // with the engine — a failed prompt does not advance the counter, and the
@@ -425,6 +432,52 @@ export async function POST(req: NextRequest): Promise<Response> {
         };
         armIdleTimeout();
 
+        // Display-only usage + roadmap snapshot. Emitted as soon as the MAIN
+        // (or continuation) turn goes idle — BEFORE the hidden roadmap-sync turn
+        // fires — so the context meter and roadmap bar update the instant the
+        // visible reply lands, instead of staying stale until the sync turn ends
+        // (which can be 5–30s, or the 20s watchdog, later). This does NOT record
+        // compression savings or set `done` — it is purely a live UI refresh;
+        // doFinish() still emits the authoritative final usage/roadmap + done.
+        const emitUsageSnapshot = async (): Promise<void> => {
+          try {
+            const [tokensDetail, contextLimit] = await Promise.all([
+              getLatestContextTokens(sessionId, directory),
+              getProviderContextLimit(),
+            ]);
+            const latestState = await readSessionState(sessionId).catch(
+              () => preState
+            );
+            const usedTokens = applyPendingCompressionSavings(
+              contextUsedTokens(tokensDetail),
+              tokensDetail.createdMs,
+              latestState
+            );
+            const pct = Math.min(
+              100,
+              Math.round((usedTokens / contextLimit) * 100)
+            );
+            const reasoningTokens = tokensDetail.reasoning ?? 0;
+            const documentBytes =
+              (latestState.loadedContextBytes ?? 0) +
+              sumReadDocBytes(latestState);
+            const breakdown = computeContextBreakdown(
+              usedTokens,
+              reasoningTokens,
+              documentBytes
+            );
+            emit({ type: "usage", usedTokens, contextLimit, pct, breakdown });
+          } catch {
+            // Non-fatal — the final doFinish usage frame will still fire.
+          }
+          try {
+            const roadmap = await readRoadmapState(sessionId);
+            if (roadmap) emit({ type: "roadmap", roadmap });
+          } catch {
+            // No roadmap / parse error — skip
+          }
+        };
+
         const doFinish = async (): Promise<void> => {
           if (done) return;
           done = true;
@@ -434,9 +487,35 @@ export async function POST(req: NextRequest): Promise<Response> {
               getProviderContextLimit(),
             ]);
 
+            const dcpCompressedTokensNow = await readDcpTotalCompressedTokens(
+              sessionId
+            );
+            const newlyCompressedTokens = Math.max(
+              0,
+              dcpCompressedTokensNow - dcpCompressedTokensAtStart
+            );
+            if (newlyCompressedTokens > 0) {
+              await recordCompressionSavings(
+                sessionId,
+                dcpCompressedTokensNow,
+                newlyCompressedTokens,
+                Date.now()
+              );
+            }
+
+            // Re-read state to get latest document byte counters
+            const latestState = await readSessionState(sessionId).catch(
+              () => preState
+            );
             // True current context-window occupancy from the latest turn
-            // (NOT the engine's cumulative lifetime sum).
-            const usedTokens = contextUsedTokens(tokensDetail);
+            // (NOT the engine's cumulative lifetime sum). A `compress` tool call
+            // during this just-finished turn lowers the NEXT prompt, not the
+            // already-sent prompt, so subtract the newly saved tokens for display.
+            const usedTokens = applyPendingCompressionSavings(
+              contextUsedTokens(tokensDetail),
+              tokensDetail.createdMs,
+              latestState
+            );
 
             const pct = Math.min(
               100,
@@ -448,10 +527,6 @@ export async function POST(req: NextRequest): Promise<Response> {
             // usedTokens after the context-manager compresses (see helper doc).
             const reasoningTokens = tokensDetail.reasoning ?? 0;
 
-            // Re-read state to get latest document byte counters
-            const latestState = await readSessionState(sessionId).catch(
-              () => preState
-            );
             // Documents = files loaded via the button + files the agent read
             const documentBytes =
               (latestState.loadedContextBytes ?? 0) +
@@ -490,14 +565,12 @@ export async function POST(req: NextRequest): Promise<Response> {
               .filter(Boolean)
               .join("\n\n");
             const syncText =
-              "[Roadmap sync — automated] Review the conversation above. " +
-              "Call roadmap_mark_done with ONE array entry PER checklist item that now " +
-              "has data (a confirmed answer from the user or an uploaded document). " +
-              "Word each entry like the matching checklist line above (copy its key " +
-              "words); if one document covers several items, list each item separately " +
-              "— never lump them into a single document description. " +
+              "[Roadmap sync — automated] Call roadmap_mark_done with ONE array " +
+              "entry PER checklist item that now has data from the conversation above. " +
+              "Word each entry like the matching checklist line (copy its key words). " +
+              "If one document covers several items, list each separately. " +
               "Call roadmap_mark_undone for any item now contradicted. " +
-              "Then reply exactly <reply>Synced.</reply>.";
+              "Do NOT write a text reply — just call the tools.";
             await promptAsync(sessionId, syncText, {
               directory,
               system: syncSystem,
@@ -509,7 +582,11 @@ export async function POST(req: NextRequest): Promise<Response> {
             if (subagentWatchdog) clearTimeout(subagentWatchdog);
             subagentWatchdog = setTimeout(() => void doFinish(), SUBAGENT_WATCHDOG_MS);
             return true;
-          } catch {
+          } catch (e) {
+            console.error(
+              "[stream] fireRoadmapSync failed:",
+              e instanceof Error ? e.message : String(e)
+            );
             return false;
           }
         };
@@ -603,6 +680,10 @@ export async function POST(req: NextRequest): Promise<Response> {
             }
             // Main/continuation done → fire the hidden roadmap-sync turn (best-effort).
             if (!subagentFired) {
+              // Refresh the context meter + roadmap bar NOW, while the visible
+              // reply has just landed — don't make the user wait for the hidden
+              // sync turn (or its 20s watchdog) before the UI updates.
+              await emitUsageSnapshot();
               subagentFired = true;
               inSubagentPhase = true;
               inContinuationPhase = false;
@@ -817,15 +898,28 @@ export async function POST(req: NextRequest): Promise<Response> {
                 "Agent error";
 
               if (!inSubagentPhase) {
-                // Surface the error to the user only on the main/continuation turn.
-                // If we already streamed text (the main turn produced a good reply
-                // and only a follow-on errored), don't clobber the good reply —
-                // just finish silently.
-                if (!sawText) {
+                // Surface the error to the user only if the main/continuation turn
+                // produced nothing useful. If it already produced text or tools, keep
+                // the visible result and still run the hidden roadmap-sync turn.
+                if (!producedContent && !sawText) {
                   emit({ type: "error", error: errorMsg });
+                  await doFinish();
+                  break;
+                }
+
+                if (!subagentFired) {
+                  subagentFired = true;
+                  inSubagentPhase = true;
+                  inContinuationPhase = false;
+                  subagentBusy = false;
+                  sawBusy = false;
+                  if (await fireRoadmapSync()) {
+                    continue;
+                  }
                 }
               }
-              // Always terminate — session.error is a terminal signal.
+              // A sync-phase error, or a failed sync fire after a useful main turn,
+              // is terminal. Keep it hidden from the user.
               await doFinish();
               break;
             }

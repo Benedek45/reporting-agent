@@ -1,5 +1,6 @@
 import io
 import os
+import re
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import Response
 from markitdown import MarkItDown
@@ -36,57 +37,177 @@ def _ssrf_safe_url_fetcher(url: str, timeout: int = 10):
         "Only data: URIs are allowed in rendered documents."
     )
 
-# Minimal CSS for readable PDF output (no external dependencies)
+# CSS for PDF/DOCX output — A4, page numbers, section breaks, WeasyPrint paged media
 _BASE_CSS = """
+@page {
+    size: A4 portrait;
+    margin: 2.5cm 2.5cm 3cm 2.5cm;
+    @bottom-right {
+        content: "Page " counter(page) " of " counter(pages);
+        font-size: 8pt;
+        color: #888;
+        font-family: DejaVu Sans, Arial, sans-serif;
+    }
+}
+
 body {
     font-family: DejaVu Sans, Arial, sans-serif;
-    font-size: 11pt;
-    line-height: 1.5;
-    margin: 2.5cm 2.5cm 2.5cm 2.5cm;
+    font-size: 10.5pt;
+    line-height: 1.6;
     color: #1a1a1a;
+    orphans: 3;
+    widows: 3;
 }
-h1 { font-size: 20pt; margin-top: 1.4em; margin-bottom: 0.4em; }
-h2 { font-size: 15pt; margin-top: 1.2em; margin-bottom: 0.3em; }
-h3 { font-size: 12pt; margin-top: 1em; margin-bottom: 0.2em; }
-h4, h5, h6 { font-size: 11pt; margin-top: 0.8em; margin-bottom: 0.2em; }
-p  { margin: 0.5em 0; }
+
+h1 {
+    font-size: 18pt;
+    margin-top: 1.6em;
+    margin-bottom: 0.5em;
+    break-before: page;
+    break-after: avoid;
+    color: #1a3a5c;
+    border-bottom: 2px solid #1a3a5c;
+    padding-bottom: 0.2em;
+}
+/* Don't insert a blank page before the very first heading */
+h1:first-child { break-before: avoid; }
+
+h2 {
+    font-size: 13pt;
+    margin-top: 1.3em;
+    margin-bottom: 0.4em;
+    break-after: avoid;
+    color: #1a3a5c;
+}
+h3 {
+    font-size: 11pt;
+    margin-top: 1em;
+    margin-bottom: 0.3em;
+    break-after: avoid;
+}
+h4, h5, h6 {
+    font-size: 10.5pt;
+    margin-top: 0.8em;
+    margin-bottom: 0.2em;
+    break-after: avoid;
+}
+
+p { margin: 0.5em 0; }
+
 pre, code {
     font-family: DejaVu Sans Mono, Courier New, monospace;
-    font-size: 9pt;
-    background: #f5f5f5;
+    font-size: 8.5pt;
+    background: #f4f4f4;
     border-radius: 3px;
     padding: 0.1em 0.3em;
 }
-pre { padding: 0.6em 0.8em; overflow-x: auto; }
+pre {
+    padding: 0.6em 0.8em;
+    /* overflow-x: auto has no effect in PDF — wrap instead */
+    white-space: pre-wrap;
+    word-break: break-word;
+    overflow-wrap: break-word;
+    break-inside: avoid;
+}
+
 table {
     border-collapse: collapse;
     width: 100%;
     margin: 0.8em 0;
-    font-size: 10pt;
+    font-size: 9.5pt;
+    break-inside: auto;
 }
+thead { display: table-header-group; } /* repeat header on each page */
 th, td {
-    border: 1px solid #aaa;
-    padding: 0.35em 0.6em;
+    border: 1px solid #b0b0b0;
+    padding: 0.35em 0.65em;
     text-align: left;
+    vertical-align: top;
 }
-th { background: #e8e8e8; font-weight: bold; }
-tr:nth-child(even) { background: #f9f9f9; }
+th {
+    background: #dce6f0;
+    font-weight: bold;
+    color: #1a3a5c;
+}
+tr { break-inside: avoid; }
+tr:nth-child(even) { background: #f5f8fb; }
+
 blockquote {
-    border-left: 3px solid #ccc;
+    border-left: 3px solid #1a3a5c;
     margin: 0.5em 0 0.5em 1em;
-    padding: 0.2em 0.8em;
-    color: #555;
+    padding: 0.3em 0.8em;
+    color: #444;
+    font-style: italic;
 }
 ul, ol { margin: 0.4em 0; padding-left: 1.6em; }
-li { margin: 0.2em 0; }
-a { color: #1a5276; }
+li { margin: 0.2em 0; break-inside: avoid; }
+a { color: #1a5276; text-decoration: none; }
 """
 
-_MD_EXTENSIONS = ["tables", "fenced_code", "sane_lists", "toc"]
+_MD_EXTENSIONS = ["tables", "fenced_code", "sane_lists", "toc", "attr_list"]
+
+# A GFM table separator row, e.g. "|---|:--:|---|" or "--- | ---".
+# Requires at least one internal pipe so a plain "---" horizontal rule is NOT
+# matched. Cells may carry leading/trailing colons for alignment.
+_TABLE_SEPARATOR_RE = re.compile(
+    r"^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$"
+)
+
+
+def _fix_table_blank_lines(md_text: str) -> str:
+    """
+    Python-Markdown's `tables` extension only recognises a table when a BLANK
+    LINE precedes the header row. Models frequently emit a label immediately
+    above the table with no blank line, e.g.:
+
+        **Air pollutants (within permit limits):**
+        | Pollutant | Emission |
+        |-----------|----------|
+        | NOx       | 42.0     |
+
+    Without the blank line the whole block is parsed as a single paragraph, so
+    every pipe renders as a literal `|` and the rows collapse onto one line.
+
+    This inserts the missing blank line before the header row of any table whose
+    separator line is preceded by a non-blank, non-table line. Tables that
+    already have a preceding blank line are left untouched. Fenced code blocks
+    are skipped so ASCII art / diff hunks are never altered.
+    """
+    lines = md_text.split("\n")
+    out: list[str] = []
+    in_fence = False
+    fence_marker = ""
+
+    for line in lines:
+        stripped = line.lstrip()
+        # Track fenced code blocks (``` or ~~~) — never touch their contents.
+        if not in_fence and (stripped.startswith("```") or stripped.startswith("~~~")):
+            in_fence = True
+            fence_marker = stripped[:3]
+            out.append(line)
+            continue
+        if in_fence:
+            if stripped.startswith(fence_marker):
+                in_fence = False
+            out.append(line)
+            continue
+
+        # A separator row identifies a table. The header is the line just above
+        # it (out[-1]); the line above the header (out[-2]) must be blank for the
+        # table extension to fire. Insert a blank line when it is missing.
+        if _TABLE_SEPARATOR_RE.match(line) and len(out) >= 1 and "|" in out[-1]:
+            if len(out) >= 2 and out[-2].strip() != "":
+                out.insert(len(out) - 1, "")
+
+        out.append(line)
+
+    return "\n".join(out)
 
 
 def _markdown_to_html(md_text: str) -> str:
-    body = markdown.markdown(md_text, extensions=_MD_EXTENSIONS)
+    body = markdown.markdown(
+        _fix_table_blank_lines(md_text), extensions=_MD_EXTENSIONS
+    )
     return (
         "<!DOCTYPE html><html><head>"
         '<meta charset="utf-8">'

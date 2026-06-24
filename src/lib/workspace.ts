@@ -1090,6 +1090,73 @@ export function sumReadDocBytes(state: SessionState): number {
   return Object.values(map).reduce((a, b) => a + b, 0);
 }
 
+function dcpSidecarPath(sessionId: string): string {
+  const safeSessionId = path.basename(sessionId).replace(/[/\\]/g, "_");
+  return path.join(
+    workspacesRoot(),
+    ".context-manager",
+    "dcp",
+    `${safeSessionId}.json`
+  );
+}
+
+function numberAtPath(value: unknown, keys: string[]): number {
+  let current = value;
+  for (const key of keys) {
+    if (typeof current !== "object" || current === null || !(key in current)) {
+      return 0;
+    }
+    current = (current as Record<string, unknown>)[key];
+  }
+  return typeof current === "number" && Number.isFinite(current) ? current : 0;
+}
+
+export async function readDcpTotalCompressedTokens(
+  sessionId: string
+): Promise<number> {
+  try {
+    const raw = await fs.readFile(dcpSidecarPath(sessionId), "utf8");
+    const parsed = JSON.parse(raw) as unknown;
+    return numberAtPath(parsed, ["stats", "totalTokensCompressed"]);
+  } catch {
+    return 0;
+  }
+}
+
+export async function recordCompressionSavings(
+  sessionId: string,
+  totalCompressedTokens: number,
+  savedTokens: number,
+  compressedAtMs: number
+): Promise<void> {
+  if (savedTokens <= 0) return;
+  await updateSessionState(sessionId, (state) => {
+    state.dcpTotalCompressedTokensSeen = totalCompressedTokens;
+    state.lastCompressionMs = compressedAtMs;
+    state.pendingCompressionSavingsTokens = Math.max(
+      0,
+      (state.pendingCompressionSavingsTokens ?? 0) + savedTokens
+    );
+  });
+}
+
+export function applyPendingCompressionSavings(
+  usedTokens: number,
+  latestAssistantCreatedMs: number | undefined,
+  state: SessionState
+): number {
+  const savings = state.pendingCompressionSavingsTokens ?? 0;
+  const compressedAt = state.lastCompressionMs ?? 0;
+  if (savings <= 0 || compressedAt <= 0) return usedTokens;
+  if (
+    latestAssistantCreatedMs !== undefined &&
+    latestAssistantCreatedMs >= compressedAt
+  ) {
+    return usedTokens;
+  }
+  return Math.max(0, Math.round(usedTokens - savings));
+}
+
 /**
  * Deletes a session's workspace directory AND the `.sessions/<id>` mapping
  * file. Idempotent — missing paths are ignored. Caller is responsible for

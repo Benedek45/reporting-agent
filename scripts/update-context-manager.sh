@@ -18,7 +18,7 @@ set -euo pipefail
 # Pinned to the context-manager commit that estimates context size from
 # message content instead of provider per-turn usage metadata (builds on the
 # hard-cap floor + system.transform empty-turn guard). See AGENTS.md §7.
-REF="${1:-48a187a963066a7b9247c080a68f466f5db45235}"
+REF="${1:-ef2400102e6f2c317f1351f57773eae002e18907}"
 REPO_URL="https://github.com/Benedek45/context-manager.git"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(dirname "$SCRIPT_DIR")"

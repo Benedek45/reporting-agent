@@ -17,7 +17,7 @@ param(
   # Pinned to the context-manager commit that estimates context size from
   # message content instead of provider per-turn usage metadata (builds on the
   # hard-cap floor + system.transform empty-turn guard). See AGENTS.md §7.
-  [string]$Ref = "48a187a963066a7b9247c080a68f466f5db45235"
+  [string]$Ref = "ef2400102e6f2c317f1351f57773eae002e18907"
 )
 $ErrorActionPreference = "Stop"
 

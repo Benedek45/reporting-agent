@@ -335,6 +335,7 @@ export async function getSessionTokensDetail(
 
 export interface OpenCodeContextTokens extends OpenCodeTokensDetail {
   total?: number;
+  createdMs?: number;
 }
 
 /**
@@ -359,16 +360,32 @@ export async function getLatestContextTokens(
 
   for (let i = entries.length - 1; i >= 0; i--) {
     const info = entries[i]?.info;
-    if (info?.role === "assistant" && info.tokens) {
-      const t = info.tokens;
-      return {
-        total: t.total,
-        input: t.input ?? 0,
-        output: t.output ?? 0,
-        reasoning: t.reasoning ?? 0,
-        cache: { read: t.cache?.read ?? 0, write: t.cache?.write ?? 0 },
-      };
-    }
+    if (info?.role !== "assistant" || !info.tokens) continue;
+    const t = info.tokens;
+    // Compute the effective occupancy for THIS message and skip it if it is 0.
+    // The hidden roadmap-sync turn (and other degenerate empty turns) frequently
+    // record an assistant message with all-zero tokens and no `total`. Because we
+    // scan from the newest message backwards, such a 0-token message would
+    // otherwise be returned as the "current" context occupancy and reset the
+    // %-context meter to 0% — both on the live `done` frame and on a page refresh
+    // (the /state route uses this same function). Walk past it to the most recent
+    // assistant message that actually carries a meaningful token measurement.
+    const effectiveTotal =
+      typeof t.total === "number" && t.total > 0
+        ? t.total
+        : (t.input ?? 0) +
+          (t.output ?? 0) +
+          (t.cache?.read ?? 0) +
+          (t.cache?.write ?? 0);
+    if (effectiveTotal <= 0) continue;
+    return {
+      total: t.total,
+      input: t.input ?? 0,
+      output: t.output ?? 0,
+      reasoning: t.reasoning ?? 0,
+      cache: { read: t.cache?.read ?? 0, write: t.cache?.write ?? 0 },
+      createdMs: info.time.created,
+    };
   }
 
   return { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } };

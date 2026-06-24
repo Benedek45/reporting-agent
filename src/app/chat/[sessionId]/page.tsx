@@ -229,7 +229,9 @@ export default function ChatPage() {
 
   const refreshState = useCallback(async () => {
     try {
-      const res = await fetch(`/api/session/${encodeURIComponent(sessionId)}/state`);
+      const res = await fetch(`/api/session/${encodeURIComponent(sessionId)}/state`, {
+        cache: "no-store",
+      });
       if (!res.ok) return;
       const data = (await res.json()) as {
         usedTokens: number;
@@ -1030,7 +1032,6 @@ export default function ChatPage() {
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={handleKeyDown}
-              disabled={busy}
               aria-label="Message input"
               className="composer-textarea"
             />

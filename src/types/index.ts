@@ -83,6 +83,12 @@ export interface SessionState {
    * the "Documents" slice of the context breakdown.
    */
   readDocBytes?: Record<string, number>;
+  /** Last cumulative DCP/manual-compress total observed from the context-manager sidecar. */
+  dcpTotalCompressedTokensSeen?: number;
+  /** Epoch ms when the latest manual compression completed. */
+  lastCompressionMs?: number;
+  /** Newly saved tokens to subtract from pre-compression latest-turn usage until next turn. */
+  pendingCompressionSavingsTokens?: number;
 }
 
 export interface SessionTokenUsage {

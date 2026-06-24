@@ -218,6 +218,24 @@ Also done (2026-06, workspace + roadmap + editor pass — Docker run + API verif
   sum that grew ~quadratically). Proven on a live multi-step turn: engine cumulative = 222,463
   vs corrected latest-turn = 24,886. `OpenCodeMessageInfo` gained an optional `tokens` field;
   `getSessionTokensDetail` is now unused but kept.
+- **Context meter stale-cache bug FIXED.** Next.js production cached
+  `GET /api/session/:id/state` by URL, so a chat could show live messages and roadmap updates
+  while the context bar stayed stuck at the first cached `0%` response. The state route is now
+  explicitly dynamic (`dynamic = "force-dynamic"`, `revalidate = 0`) and returns
+  `Cache-Control: no-store, no-cache, must-revalidate`; the client `refreshState()` fetch also
+  uses `cache: "no-store"`. Live proof on `ses_10a9c3685ffej2CfKKwNmDv1O4`: plain `/state`
+  returned stale `0`, while cache-busted `/state?...` returned `38,527 / 131,072` tokens with
+  a correct breakdown.
+- **Context meter manual-compression projection FIXED.** A `compress` tool call mutates the
+  context-manager sidecar immediately, but the latest assistant message's provider token total
+  still describes the already-sent PRE-compression prompt. `/api/chat/stream` now snapshots
+  `/workspaces/.context-manager/dcp/<session>.json.stats.totalTokensCompressed` before firing
+  the prompt, records newly saved tokens at `doFinish`, and stores them in session state as
+  `pendingCompressionSavingsTokens` with `lastCompressionMs`. Both the stream `usage` frame and
+  `/api/session/:id/state` subtract that pending amount when the latest assistant message was
+  created before the compression, so the UI bar drops immediately after compression; the next
+  real turn naturally supersedes the projection because its assistant timestamp is newer than
+  `lastCompressionMs`.
 - **Session-state torn-read crash FIXED.** Uploading/editing a file fires a notify turn in
   which the agent does a burst of `read`s; each completed read fires a fire-and-forget
   `recordReadDocBytes` read-modify-write on the ~9KB `.sessions/<id>` JSON (now large because
@@ -593,10 +611,10 @@ and picking up stray configs — the original collision cause).
   (`Benedek45/context-manager`, MIT, clean-room — no AGPL source). This repo only
   CONSUMES the built bundle: rebuild `.opencode/context-manager.js` with
   `scripts/update-context-manager.{ps1,sh}` (clone → `bun build` the opencode adapter
-  → drop the single file), pinned at commit **`48a187a`** (fixes nudge/hard-cap context
-  estimation to use message content rather than provider per-turn token usage; builds on
-  `3e7b14b9` hard-cap + Set/Map serialization fix and the `2221b92` system.transform
-  empty-turn guard). **Plugin-hook gotcha:**
+  → drop the single file), pinned at commit **`ef24001`** (fixes the compress tool so it
+  actually resolves model ranges — see the compression-fix changelog entry; builds on
+  `48a187a` nudge/hard-cap content-based estimation, `3e7b14b9` hard-cap + Set/Map
+  serialization fix, and the `2221b92` system.transform empty-turn guard). **Plugin-hook gotcha:**
   opencode invokes `experimental.chat.system.transform` (and the other hooks) with a
   `Provider.Model` whose model-id field is **`model.id`** (NOT `.modelID`; provider is
   `model.providerID`, window is `model.limit.context`). A plugin MUST read those and
@@ -884,51 +902,88 @@ two parallel `general` subagents; live-verified; pushed):
    returns 674-char CSRD interview reply. DCP context-manager configured with percentage
    thresholds (hardCap 88%, nudges 45/62/75/45%) resolved against the 131K served window.
 
-   **Qwen3.6-27B via Ollama on g6e.xlarge L40S 48GB (2026-06, VERIFIED):** After failing to
-   run Qwen3.6-27B on L4 24GB (AWQ/GPTQ OOM; vLLM 0.23.0 lacks DeltaNet GGUF weight
-   mappings), obtained a **g6e.xlarge** (1× L40S 48GB, eu-central-1c) on-demand and deployed
-   via **Ollama** (not vLLM — Ollama/llama.cpp has native DeltaNet support in GGUF).
-   Running instance: `i-0966373546c314931`, public IP varies (stop when not in use; **USE
-   ON-DEMAND** — spot is instantly reclaimed on g6e). SSH key:
-   `D:\AGI_gent\gemma4-vllm-key.pem` (gitignored). Ollama setup:
+   **Qwen3.6-27B via Ollama on g6e.xlarge L40S 48GB (2026-06, SUPERSEDED):** Earlier
+   deployment via Ollama on a single g6e.xlarge (i-0966373546c314931, STOPPED). Superseded
+   by the 2x g6.xlarge vLLM TP=2 cluster below. Key findings retained: Ollama returns thinking
+   in a separate `reasoning` field; `limit.output` must be ≥32768 for Qwen thinking models
+   (reasoning consumes `max_tokens` budget → empty visible text if too low); `cleanVisibleReply`
+   strips `<antThinking>`/`<thinking>` pseudo-tags; the continuation turn + empty-turn retry
+   robustness were also built during this phase.
+
+   **GPU upgrade path (2026-06, PENDING QUOTA):** All instances currently STOPPED.
+   App is running on `opencode-go/deepseek-v4-flash` (cloud) while waiting for quota.
+   Quota increase request: `L-DB2E81BA` (G+VT On-Demand) 8→48 vCPUs, ID
+   `d64b8b1bf15c486d8e520b210aff40beOgR2HGO5`, filed 2026-06-24. When approved:
+   - **First try:** `g6e.xlarge` ($2.33/hr, 1× L40S 48GB, TP=1) — 17.45 GiB model leaves
+     ~25 GiB for KV cache, estimated 25–35 tok/s, no Ray needed. Try `eu-central-1b` AZ
+     if `eu-central-1c` gives InsufficientInstanceCapacity.
+   - **Fallback:** `g5.12xlarge` ($7.09/hr, 4× A10G PCIe same node, 96 GB total VRAM, TP=4)
+     — estimated 50–70 tok/s.
+   - **Do NOT try g5.xlarge (single A10G 24GB):** only 22 GiB usable, model takes 17.45 GiB,
+     leaves only ~1 GiB for KV cache (max context ~15k tokens) — confirmed OOM.
+   vLLM command for **g6e.xlarge** (no Ray, no TP): same as below but remove
+   `--tensor-parallel-size`, `--distributed-executor-backend ray`, `--max-num-seqs` flags;
+   keep `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, `--max-model-len 120000`,
+   `--gpu-memory-utilization 0.85`.
+
+   **Qwen3.6-27B via vLLM TP=2 on 2× g6.xlarge L4 24GB (2026-06, STOPPED):**
+   Previously active deployment serving `groxaxo/Qwen3.6-27B-GPTQ-Pro-4Bit` (GPTQ 4-bit,
+   17.4 GiB, Qwen3 DeltaNet hybrid Mamba+attention architecture). STOPPED to free quota for
+   the g6e/g5.12x upgrade. Was slow (3–8 tok/s) due to cross-node ENA all-reduce overhead.
+
+   **Instances:**
+   - Head: `i-03fcab7513babb4ae`, public IP `18.157.74.128`, private `172.31.14.42`, g6.xlarge,
+     1× L4 24GB, eu-central-1c
+   - Worker: `i-0144f4f776d9085d9`, public IP `3.75.234.3`, private `172.31.4.187`, g6.xlarge,
+     1× L4 24GB, eu-central-1c
+   - Same AZ/subnet (subnet-0004696f100f54d63), SG `sg-0ef072c9e50e1cf42` (self-referencing
+     inbound rule for Ray inter-node traffic; ports 22, 8000, 11434 open)
+   - Both EBS: 120 GB XFS. **USE ON-DEMAND** (not spot). SSH key: `D:\AGI_gent\gemma4-vllm-key.pem`.
+   - g6e.xlarge (i-0966373546c314931): STOPPED — InsufficientInstanceCapacity in eu-central-1c
+   - g6.2xlarge (i-04e863d7398d3df87): STOPPED — freed vCPU quota for the 2x g6.xlarge
+
+   **Active .env config:**
    ```
-   curl -fsSL https://ollama.com/install.sh | sh
-   # Configure system service to listen externally:
-   sudo mkdir -p /etc/systemd/system/ollama.service.d
-   sudo tee /etc/systemd/system/ollama.service.d/override.conf << 'EOF'
-   [Service]
-   Environment="OLLAMA_HOST=0.0.0.0"
-   Environment="OLLAMA_NUM_CTX=65536"
-   EOF
-   sudo systemctl daemon-reload && sudo systemctl restart ollama
-   ollama pull qwen3.6:27b   # 17GB Q4_K_M, ~2 min on L40S
+   GEMMA_API_KEY=sk-qwen-tp2-key
+   GEMMA_BASE_URL=http://18.157.74.128:8000/v1
+   OPENCODE_MODEL=gemma4-aws/groxaxo/Qwen3.6-27B-GPTQ-Pro-4Bit
    ```
-   Endpoint: `http://<instance-ip>:11434/v1` (port 11434, SG `sg-0ef072c9e50e1cf42` opens
-   22+8000+11434). Model: `qwen3.6:27b` (Alibaba Apache 2.0, 27B dense, 256K native context,
-   Q4_K_M = 17GB, tool calling + thinking mode built in). **Key behavior**: Ollama returns
-   thinking in a separate `reasoning` field (NOT in `content`) — the answer in `content` is
-   clean with no `<think>` tags. **CRITICAL — `limit.output` must be GENEROUS for a
-   thinking model.** Qwen's reasoning routinely runs to thousands of tokens; if
-   `limit.output` is too low (we had `8192`) the engine sends that as `max_tokens`, the
-   reasoning consumes the ENTIRE budget, the generation hits `finish_reason:length`
-   BEFORE any content/answer is emitted → the turn returns **empty visible text**
-   (the "agent stopped / blank bubble / roadmap stuck at 0" symptom). FIX: set the
-   qwen model `limit.output: 32768` in `opencode.json` (verified: the agent then
-   completes its reasoning AND emits a full reply + inline `roadmap_mark_done`, e.g.
-   0→4/50, with a real continuation question). This is NOT a `max_tokens<200` edge
-   case — it bit us at 8192 in normal use. Two defenses were also added: (1) a VISIBLE
-   **continuation turn** in `chat/stream/route.ts` (`fireContinuation`) that auto-fires
-   when a user-facing turn did tool work but produced zero visible text — it makes the
-   agent confirm + ask the next question (its auto-prompt `[Continue — automated]` is
-   hidden in history, its reply is shown); (2) `cleanVisibleReply` now strips
-   `<antThinking>`/`<thinking>` blocks (Qwen leaks chain-of-thought into the CONTENT
-   channel as pseudo tags) and the chat shows a `.msg-fallback` ("Done — I've updated
-   the report.") instead of a blank bubble if a turn still ends text-less.
-   `opencode.json` uses the
-   `gemma4-aws` provider (`@ai-sdk/openai-compatible`) pointing to `{env:GEMMA_BASE_URL}`;
-   model key is `qwen3.6-256k:latest` with `limit: {context: 262144, output: 32768}`. Full verified
-   e2e: the model produced a proper CSRD interview reply (219 chars) with `<reply>` wrapper
-   intact via `/api/chat`.
+   `opencode.json` uses the `gemma4-aws` provider (`@ai-sdk/openai-compatible`) pointing to
+   `{env:GEMMA_BASE_URL}`; model key is `groxaxo/Qwen3.6-27B-GPTQ-Pro-4Bit` with
+   `limit: {context: 120000, output: 32768}`.
+
+   **Restart procedure (run in order):**
+   ```powershell
+   # 1. SSH head — stop any stale Ray/vLLM
+   ssh -i "D:\AGI_gent\gemma4-vllm-key.pem" ec2-user@18.157.74.128 "~/.local/bin/ray stop --force; sleep 3; ~/.local/bin/ray start --head --port=6379 --num-gpus=1 --disable-usage-stats"
+   # 2. SSH worker — stop and rejoin
+   ssh -i "D:\AGI_gent\gemma4-vllm-key.pem" ec2-user@3.75.234.3 "~/.local/bin/ray stop --force; sleep 3; ~/.local/bin/ray start --address='172.31.14.42:6379' --num-gpus=1 --disable-usage-stats"
+   # 3. SSH head — start vLLM
+   ssh -i "D:\AGI_gent\gemma4-vllm-key.pem" ec2-user@18.157.74.128 "echo '' > ~/vllm.log; PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True RAY_ADDRESS=auto HF_TOKEN=$env:HF_TOKEN nohup ~/.local/bin/vllm serve groxaxo/Qwen3.6-27B-GPTQ-Pro-4Bit --host 0.0.0.0 --port 8000 --tensor-parallel-size 2 --distributed-executor-backend ray --max-model-len 120000 --gpu-memory-utilization 0.85 --max-num-seqs 200 --enable-auto-tool-choice --reasoning-parser qwen3 --tool-call-parser qwen3_xml --api-key sk-qwen-tp2-key >> ~/vllm.log 2>&1 &"
+   # 4. Wait ~5 min, then verify:
+   # curl http://18.157.74.128:8000/v1/models -H "Authorization: Bearer sk-qwen-tp2-key"
+   # tail ~/vllm.log | grep "Application startup complete"
+   ```
+
+   **Key startup gotchas learned:**
+   - `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` — without this, torch inductor
+     compilation OOMs on fragmented VRAM (reserved-but-not-contiguous 331 MiB → fails 20 MiB
+     alloc during CUDA graph capture).
+   - `--max-num-seqs 200` — Qwen3.6 is a hybrid Mamba+attention model; Mamba cache blocks are
+     separate from KV cache. At 0.85 utilization with 120k context, only ~211 Mamba blocks fit.
+     Default `max_num_seqs=256 > 211` → vLLM throws `ValueError` and crashes. Must be ≤ Mamba
+     block count.
+   - `--max-model-len 120000` (not 131072) — 11k headroom avoids KV cache exhausting Mamba
+     block budget at high concurrency.
+   - `--enforce-eager` is NOT needed and NOT used — CUDA graphs compile successfully with the
+     above settings and give faster inference than eager mode.
+   - Startup takes ~5 minutes (weight load ~90s per node + torch.compile + CUDA graph capture).
+   - `ActorHandleNotFoundError: ActorHandle objects are not valid across Ray sessions` in the
+     log is cleanup noise from a previous crashed session — NOT the crash cause. Ignore it.
+   - Do NOT use `ray stop --force` while vLLM is running; it kills the worker and crashes vLLM.
+   - `limit.output: 32768` in opencode.json is critical for thinking models — Qwen reasoning
+     routinely runs thousands of tokens; a small budget → empty visible text (reasoning uses
+     all of `max_tokens` before any answer is emitted).
 
    **Gemma E4B known limitations** (observed earlier on the smaller E4B model, not the 26B):
    - **Intermittent empty turns** — some turns produce 0 text + 0 tools, likely a Gemma
@@ -960,10 +1015,11 @@ two parallel `general` subagents; live-verified; pushed):
       auto-compaction path (`processor.ts:935`) the engine emits `session.error` and
       returns WITHOUT emitting a subsequent `session.status{idle}` — so the BFF loop
       never got an idle signal → `handleIdleSignal()` never ran → `doFinish()` never
-      called → **hang**. Fix: added `else if (type === "session.error")` handler that
-      always calls `doFinish()`. If the main turn had already streamed text, the error
-      is swallowed (don't clobber the good reply); otherwise a user-visible error frame
-      is emitted. Hidden sync-phase errors are always swallowed (never surface to user).
+      called → **hang**. Fix: added `else if (type === "session.error")` handler. If
+      the main turn produced nothing useful, it emits a user-visible error and finishes;
+      if the main turn already produced text/tools, it keeps that visible result and
+      still fires the hidden roadmap-sync turn with the SAME main `compliance` agent and
+      configured model. Hidden sync-phase errors are always swallowed (never surface to user).
    2. **Watchdog cleared on busy edge.** The `subagentWatchdog` was cleared when the
       sync turn went `busy` (`session.status{busy}`). If the engine then errored (emitting
       `session.error` without idle), `subagentBusy=true` but no idle ever arrived →
@@ -978,8 +1034,10 @@ two parallel `general` subagents; live-verified; pushed):
    shape from `SessionV1.Assistant.fields.error`). In the ContextOverflow+auto-compaction
    path the engine emits `session.error` then returns WITHOUT `status.set(idle)` — this
    is the hang-causing path. In all other error paths `status.set(idle)` IS called after
-   `session.error`, so the `session.status{idle}` handler would have caught it eventually
-   — but the `session.error` handler now terminates immediately, which is faster and correct.
+   `session.error`, so the `session.status{idle}` handler would have caught it eventually.
+   Current behavior: `session.error` terminates immediately only when the current phase has
+   no useful output or is already the hidden sync phase; otherwise it first launches the
+   hidden roadmap update so progress is not skipped after a mostly-successful main run.
    **`read:error` on the original hang session (ses_10bb71778ffe4bGWZx2Z3WVYW0):** the
    uploaded file was `Raw_Supplier_Facility_Data_2024 (1).csv` (spaces + parens). The
    model tried to read a path it constructed incorrectly (model error, not a BFF escaping
@@ -989,12 +1047,61 @@ two parallel `general` subagents; live-verified; pushed):
    Verified live (deepseek-v4-flash, 3 turns): turn 1 = 81.2s/777 frames/done; notify
    turn = 142.3s/835 frames/done; turn 3 = 98.6s/883 frames/done. No hangs.
 
-   For a production local-model test at this caliber, consider the **Gemma 4 26B A4B**
-   on L40S 48GB (FP8 = 28.8GB, fits natively) which requires a further quota increase
-   (`g6e.xlarge` fits at 4 vCPU; `g6e.2xlarge` needs 8). The NVFP4-on-L4 deployment proved
-   the end-to-end architecture: custom openai-compatible provider + vLLM with chat-template +
-   thinking enabled + on-demand GPU instances. Scaling to L40S uses the same wiring.
-- **`HANDOFF.md` removed** — `AGENTS.md` is the single source of truth.
+   The NVFP4-on-L4 deployment (Gemma 4 26B A4B) proved the end-to-end architecture; the
+   Qwen3.6 TP=2 cluster is the current active local-model deployment. For an even stronger
+   local model, Gemma 4 26B A4B on a single L40S 48GB (g6e.xlarge, FP8 = 28.8GB) uses the
+   same wiring — swap `GEMMA_BASE_URL`, model key, and `limit.context`.
+ - **`HANDOFF.md` removed** — `AGENTS.md` is the single source of truth.
+
+Also done (2026-06, four UI/UX bug fixes + a CRITICAL compression bug — Docker run +
+API verified; user-confirmed working):
+- **Compression was a silent no-op (CRITICAL, context-manager `48a187a`→`ef24001`).** The
+  model-driven `compress` tool reported success ("Compressed 1 range(s) into block(s): ."
+  — note the EMPTY block id) but never actually compressed: `blockRegistry: []`,
+  `nextBlockId` stuck at 1, `stats.totalCompressRuns: 0`, and the context never shrank.
+  ROOT CAUSE in `clean-impl/adapters/opencode/tool.ts`: the tool resolved the model's range
+  ids (`startId`/`endId` like `m0001`) against neutral messages built by `toNeutral(entries)`,
+  which only carry the RAW engine ids (`msg_…`). `findMessageIndex` matches on `m.ref` or
+  `m.id`, but `entryToNeutral` never sets `.ref` (refs are assigned only by `runTagging` in the
+  messages-transform pass, NOT in the tool path). So `resolveRange` always returned 0 messages
+  → `continue` → no block created → empty `blockList`. FIX: sync each neutral message's `.ref`
+  from `state.messageIds.byRawId` (a `Map<rawId,ref>`) right after `toNeutral`, mirroring
+  `runTagging`'s already-tagged branch. Fixed in the EXTERNAL repo (`Benedek45/context-manager`,
+  fast-forwarded `main` `48a187a`→`ef24001`), re-pinned in `scripts/update-context-manager.{ps1,sh}`,
+  and the bundle rebuilt via the official script (reproducible). Verified e2e: a 3-turn session
+  → `compress` now yields `blockRegistry:[b1]`, `nextBlockId:2`, `totalCompressRuns:1`,
+  `totalTokensCompressed:10216`, and the context meter drops (~15k→~8k via the existing
+  `applyPendingCompressionSavings` projection).
+- **Context meter reset to 0% after a turn (the hidden roadmap-sync turn clobbered it).**
+  `getLatestContextTokens` scanned history newest-first for the last assistant message with a
+  `tokens` field and returned IT. But the hidden roadmap-sync turn records an assistant message
+  with ALL-ZERO tokens (`{input:0,output:0,…}`, no `total`), so the meter read 0 → showed 0%
+  both on the live `done` frame AND on `/state` (the refresh path uses the same function). FIX
+  (`src/lib/opencode.ts`): skip assistant messages whose effective token total is 0 and return
+  the most recent MEANINGFUL measurement (the real main-turn message). Also added an EARLY
+  display-only `emitUsageSnapshot()` in `chat/stream/route.ts` fired the instant the MAIN turn
+  goes idle (before the sync turn), so the meter + roadmap bar refresh immediately instead of
+  waiting 5–30s (or the 20s watchdog) for the hidden sync turn to finish. Verified: live frame
+  and `/state` both report the real value (e.g. 18,253 / 17,895), never 0, after the sync turn.
+- **Type while the agent is running (composer textarea).** The composer `<textarea>` was
+  `disabled={busy}`. Removed the `disabled` attr so the user can COMPOSE during a turn; `handleSend`
+  still guards `if (busy) return` and the Send button is replaced by Stop while busy, so a message
+  can be typed but not sent mid-turn (the requested behaviour).
+- **PDF/DOCX table rendered as literal pipes (converter).** A model-written label immediately
+  ABOVE a table with no blank line (e.g. `**Air pollutants…:**\n| Pollutant | … |`) made
+  python-markdown treat the whole block as one paragraph → every `|` rendered literally and the
+  rows collapsed. FIX (`converter/app.py` `_fix_table_blank_lines`, applied in `_markdown_to_html`
+  so it covers BOTH `/render` PDF and DOCX): detect a GFM separator row (`|---|---|`, requires an
+  internal pipe so a plain `---` rule is untouched) and insert a blank line before the header row
+  when the preceding line is non-blank; fenced code blocks are skipped. Verified: `<table>` with
+  proper `<tr>` rows now renders.
+- **NOTE — the hidden roadmap-sync turn is INTACT (do not remove it).** An earlier attempt
+  gated it off for deepseek (reasoning: deepseek marks the roadmap inline); the user rejected
+  this and a test confirmed deepseek's main turn called `skill,read×6` with ZERO inline
+  `roadmap_mark_done`, so the sync turn is still needed. The sync turn fires intermittently for
+  deepseek (sometimes an empty 0-token turn that the watchdog finishes at 20s, sometimes it marks
+  items) — that is pre-existing and acceptable; the meter fix above makes its empty turns harmless
+  to the context bar. `fireRoadmapSync`'s catch now `console.error`s on failure (diagnostic).
 
 **SECURITY — agent sandbox escape attempt (2026-06, adversarial test).** A user
 prompted the `compliance` agent to "try to escape". The filesystem/shell sandbox
