@@ -60,7 +60,7 @@
         "groxaxo/Qwen3.6-27B-GPTQ-Pro-4Bit": {
           "name": "Qwen 3.6 27B (GPTQ 4-bit, vLLM)",
           "limit": {
-            "context": 131072,
+            "context": 120000,
             "output": 32768
           }
         }

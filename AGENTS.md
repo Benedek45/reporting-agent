@@ -910,21 +910,19 @@ two parallel `general` subagents; live-verified; pushed):
    strips `<antThinking>`/`<thinking>` pseudo-tags; the continuation turn + empty-turn retry
    robustness were also built during this phase.
 
-   **GPU upgrade path (2026-06, PENDING QUOTA):** All instances currently STOPPED.
-   App is running on `opencode-go/deepseek-v4-flash` (cloud) while waiting for quota.
-   Quota increase request: `L-DB2E81BA` (G+VT On-Demand) 8→48 vCPUs, ID
-   `d64b8b1bf15c486d8e520b210aff40beOgR2HGO5`, filed 2026-06-24. When approved:
-   - **First try:** `g6e.xlarge` ($2.33/hr, 1× L40S 48GB, TP=1) — 17.45 GiB model leaves
-     ~25 GiB for KV cache, estimated 25–35 tok/s, no Ray needed. Try `eu-central-1b` AZ
-     if `eu-central-1c` gives InsufficientInstanceCapacity.
-   - **Fallback:** `g5.12xlarge` ($7.09/hr, 4× A10G PCIe same node, 96 GB total VRAM, TP=4)
-     — estimated 50–70 tok/s.
+   **GPU upgrade path (2026-06, QUOTA APPROVED):** `L-DB2E81BA` (G+VT On-Demand) raised to
+   **48 vCPUs** (confirmed 2026-06-26). g6e.xlarge was InsufficientInstanceCapacity in ALL 3
+   Frankfurt AZs when attempted — fell back to g5.12xlarge (the planned fallback). When
+   g6e capacity returns in eu-central-1, use that for lower cost. **ACTIVE instance:**
+   `i-07183e9f581f5818b` g5.12xlarge `52.57.122.88` eu-central-1b, 4× A10G 24GB = 96 GB
+   VRAM, TP=4 single-node, **RUNNING**. Verified end-to-end 2026-06-26: 4/5 test turns
+   produced real text (13–17 tok/s); 1 turn hit the known Qwen3 intermittent empty-turn
+   issue (reasoning-only, no text, retry also failed). The `<reply>` wrapper tags in raw API
+   output are correctly stripped by `cleanVisibleReply` in the browser UI.
    - **Do NOT try g5.xlarge (single A10G 24GB):** only 22 GiB usable, model takes 17.45 GiB,
      leaves only ~1 GiB for KV cache (max context ~15k tokens) — confirmed OOM.
-   vLLM command for **g6e.xlarge** (no Ray, no TP): same as below but remove
-   `--tensor-parallel-size`, `--distributed-executor-backend ray`, `--max-num-seqs` flags;
-   keep `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True`, `--max-model-len 120000`,
-   `--gpu-memory-utilization 0.85`.
+   - **g6e.xlarge** (when available): no TP needed; vLLM command same as below but omit
+     `--tensor-parallel-size 4`; keep all other flags.
 
    **Qwen3.6-27B via vLLM TP=2 on 2× g6.xlarge L4 24GB (2026-06, STOPPED):**
    Previously active deployment serving `groxaxo/Qwen3.6-27B-GPTQ-Pro-4Bit` (GPTQ 4-bit,
@@ -945,24 +943,19 @@ two parallel `general` subagents; live-verified; pushed):
    **Active .env config:**
    ```
    GEMMA_API_KEY=sk-qwen-tp2-key
-   GEMMA_BASE_URL=http://18.157.74.128:8000/v1
+   GEMMA_BASE_URL=http://52.57.122.88:8000/v1
    OPENCODE_MODEL=gemma4-aws/groxaxo/Qwen3.6-27B-GPTQ-Pro-4Bit
    ```
    `opencode.json` uses the `gemma4-aws` provider (`@ai-sdk/openai-compatible`) pointing to
    `{env:GEMMA_BASE_URL}`; model key is `groxaxo/Qwen3.6-27B-GPTQ-Pro-4Bit` with
    `limit: {context: 120000, output: 32768}`.
 
-   **Restart procedure (run in order):**
+   **Restart procedure (g5.12xlarge, single-node TP=4, no Ray):**
    ```powershell
-   # 1. SSH head — stop any stale Ray/vLLM
-   ssh -i "D:\AGI_gent\gemma4-vllm-key.pem" ec2-user@18.157.74.128 "~/.local/bin/ray stop --force; sleep 3; ~/.local/bin/ray start --head --port=6379 --num-gpus=1 --disable-usage-stats"
-   # 2. SSH worker — stop and rejoin
-   ssh -i "D:\AGI_gent\gemma4-vllm-key.pem" ec2-user@3.75.234.3 "~/.local/bin/ray stop --force; sleep 3; ~/.local/bin/ray start --address='172.31.14.42:6379' --num-gpus=1 --disable-usage-stats"
-   # 3. SSH head — start vLLM
-   ssh -i "D:\AGI_gent\gemma4-vllm-key.pem" ec2-user@18.157.74.128 "echo '' > ~/vllm.log; PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True RAY_ADDRESS=auto HF_TOKEN=$env:HF_TOKEN nohup ~/.local/bin/vllm serve groxaxo/Qwen3.6-27B-GPTQ-Pro-4Bit --host 0.0.0.0 --port 8000 --tensor-parallel-size 2 --distributed-executor-backend ray --max-model-len 120000 --gpu-memory-utilization 0.85 --max-num-seqs 200 --enable-auto-tool-choice --reasoning-parser qwen3 --tool-call-parser qwen3_xml --api-key sk-qwen-tp2-key >> ~/vllm.log 2>&1 &"
-   # 4. Wait ~5 min, then verify:
-   # curl http://18.157.74.128:8000/v1/models -H "Authorization: Bearer sk-qwen-tp2-key"
-   # tail ~/vllm.log | grep "Application startup complete"
+   # SSH in and restart vLLM (no Ray needed — all 4 GPUs are on the same node)
+   ssh -i "D:\AGI_gent\gemma4-vllm-key.pem" ec2-user@52.57.122.88 "echo '' > ~/vllm.log; ( PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True HF_TOKEN=$env:HF_TOKEN ~/.local/bin/vllm serve groxaxo/Qwen3.6-27B-GPTQ-Pro-4Bit --host 0.0.0.0 --port 8000 --tensor-parallel-size 4 --max-model-len 120000 --gpu-memory-utilization 0.85 --max-num-seqs 200 --enable-auto-tool-choice --reasoning-parser qwen3 --tool-call-parser qwen3_xml --api-key sk-qwen-tp2-key >> ~/vllm.log 2>&1 < /dev/null ) & disown"
+   # Wait ~10 min (weight load ~60s per GPU shard + torch.compile ~100s + CUDA graph capture)
+   # Verify: curl http://52.57.122.88:8000/v1/models -H "Authorization: Bearer sk-qwen-tp2-key"
    ```
 
    **Key startup gotchas learned:**
